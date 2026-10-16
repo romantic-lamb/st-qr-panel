@@ -1,0 +1,354 @@
+/* QR Panel - floating panel. Uses SillyTavern theme variables so it follows the user's theme. */
+
+.qrp-panel {
+    position: fixed;
+    z-index: 3010;
+    display: flex;
+    flex-direction: column;
+    min-width: 300px;
+    min-height: 300px;
+    max-width: calc(100vw - 8px);
+    max-height: calc(100vh - 8px);
+    resize: both;
+    overflow: hidden;
+    background-color: var(--SmartThemeBlurTintColor);
+    backdrop-filter: blur(var(--SmartThemeBlurStrength, 10px));
+    -webkit-backdrop-filter: blur(var(--SmartThemeBlurStrength, 10px));
+    color: var(--SmartThemeBodyColor);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 10px;
+    box-shadow: 0 6px 24px var(--SmartThemeShadowColor, rgba(0, 0, 0, 0.4));
+    font-size: calc(var(--mainFontSize, 15px) * 0.95);
+}
+
+.qrp-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    cursor: move;
+    user-select: none;
+    touch-action: none;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+}
+
+.qrp-title {
+    font-weight: bold;
+}
+
+.qrp-chatname {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    opacity: 0.65;
+    font-size: 0.9em;
+}
+
+.qrp-header-buttons {
+    display: flex;
+    gap: 4px;
+}
+
+.qrp-icon-btn {
+    cursor: pointer;
+    padding: 4px 6px;
+    border-radius: 5px;
+    opacity: 0.75;
+}
+
+.qrp-icon-btn:hover {
+    opacity: 1;
+    background-color: var(--white20a, rgba(255, 255, 255, 0.12));
+}
+
+.qrp-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+}
+
+.qrp-toolbar label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex: 1 1 140px;
+    min-width: 0;
+    margin: 0;
+}
+
+.qrp-toolbar select,
+.qrp-toolbar input {
+    margin: 0;
+    min-width: 0;
+    flex: 1;
+}
+
+.qrp-toolbar .qrp-lang-custom {
+    flex: 1 1 100%;
+}
+
+.qrp-qrbar {
+    max-height: 32%;
+    overflow-y: auto;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+    flex-shrink: 0;
+}
+
+.qrp-set + .qrp-set {
+    margin-top: 6px;
+}
+
+.qrp-set-name {
+    font-size: 0.8em;
+    opacity: 0.6;
+    margin-bottom: 3px;
+}
+
+.qrp-set-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+
+.qrp-qr.menu_button {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    margin: 0;
+    padding: 4px 9px;
+    width: auto;
+    min-width: 0;
+}
+
+.qrp-qr-label {
+    white-space: nowrap;
+}
+
+.qrp-script-mark {
+    margin-left: 4px;
+    font-size: 0.75em;
+    opacity: 0.6;
+}
+
+.qrp-mode {
+    font-size: 0.72em;
+    padding: 0 6px;
+    border-radius: 8px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    opacity: 0.8;
+    cursor: pointer;
+}
+
+.qrp-mode:hover {
+    opacity: 1;
+}
+
+.qrp-mode[data-mode="summary"],
+.qrp-tag[data-mode="summary"] {
+    border-color: var(--SmartThemeQuoteColor);
+}
+
+.qrp-mode[data-mode="both"],
+.qrp-tag[data-mode="both"] {
+    border-color: var(--SmartThemeEmColor);
+}
+
+.qrp-summary {
+    padding: 4px 10px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+    flex-shrink: 0;
+}
+
+.qrp-summary > summary {
+    cursor: pointer;
+    padding: 3px 0;
+}
+
+.qrp-summary-meta {
+    opacity: 0.6;
+    font-size: 0.85em;
+    margin-left: 4px;
+}
+
+.qrp-summary-text {
+    width: 100%;
+    box-sizing: border-box;
+    resize: vertical;
+    margin: 4px 0;
+}
+
+.qrp-summary-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    padding-bottom: 4px;
+}
+
+.qrp-summary-buttons .menu_button {
+    margin: 0;
+    width: auto;
+}
+
+.qrp-history {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.qrp-empty {
+    opacity: 0.6;
+    font-size: 0.9em;
+    text-align: center;
+    padding: 12px 4px;
+}
+
+.qrp-card {
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    padding: 7px 9px;
+    background-color: var(--black30a, rgba(0, 0, 0, 0.15));
+}
+
+.qrp-card.qrp-failed {
+    border-color: var(--warning, #e6a23c);
+}
+
+.qrp-card.qrp-translating {
+    opacity: 0.6;
+}
+
+.qrp-card-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 5px;
+    margin-bottom: 4px;
+}
+
+.qrp-tag {
+    font-size: 0.72em;
+    padding: 0 6px;
+    border-radius: 8px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    opacity: 0.75;
+}
+
+.qrp-time {
+    margin-left: auto;
+    font-size: 0.75em;
+    opacity: 0.55;
+}
+
+.qrp-card-body {
+    word-break: break-word;
+    line-height: 1.5;
+}
+
+.qrp-card-body p {
+    margin: 0.35em 0;
+}
+
+.qrp-card-body em {
+    color: var(--SmartThemeEmColor);
+}
+
+.qrp-card-body q,
+.qrp-card-body blockquote {
+    color: var(--SmartThemeQuoteColor);
+}
+
+.qrp-error {
+    color: var(--warning, #e6a23c);
+}
+
+.qrp-card-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 4px;
+    margin-top: 4px;
+}
+
+.qrp-act {
+    cursor: pointer;
+    font-size: 0.85em;
+    padding: 2px 6px;
+    border-radius: 5px;
+    opacity: 0.65;
+}
+
+.qrp-act:hover {
+    opacity: 1;
+    background-color: var(--white20a, rgba(255, 255, 255, 0.12));
+}
+
+.qrp-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 5px 10px;
+    font-size: 0.82em;
+    opacity: 0.75;
+    border-top: 1px solid var(--SmartThemeBorderColor);
+    padding-right: 22px; /* keep clear of the resize handle */
+}
+
+.qrp-link {
+    cursor: pointer;
+}
+
+.qrp-link:hover {
+    text-decoration: underline;
+}
+
+/* Settings drawer */
+.qrp-settings h4 {
+    margin: 12px 0 4px;
+}
+
+.qrp-settings label:not(.checkbox_label) {
+    display: block;
+    margin-top: 6px;
+}
+
+.qrp-settings small {
+    display: block;
+    opacity: 0.7;
+    margin: 2px 0 4px;
+}
+
+.qrp-settings .qrp-set-list {
+    padding-left: 10px;
+}
+
+.qrp-settings .menu_button {
+    width: fit-content;
+    white-space: nowrap;
+    padding: 4px 10px;
+}
+
+/* Phones and narrow windows: full-screen panel below the top bar */
+@media (max-width: 1000px) {
+    .qrp-panel {
+        left: 0 !important;
+        top: var(--topBarBlockSize, 0px) !important;
+        width: 100vw !important;
+        height: calc(100dvh - var(--topBarBlockSize, 0px)) !important;
+        max-width: 100vw;
+        max-height: none;
+        border-radius: 0;
+        resize: none;
+    }
+
+    .qrp-header {
+        cursor: default;
+    }
+}

@@ -1,0 +1,12 @@
+{
+    "display_name": "QR 패널 (QR Panel)",
+    "loading_order": 100,
+    "dependencies": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "aillynn97",
+    "version": "1.0.0",
+    "homePage": "https://github.com/romantic-lamb/st-qr-panel",
+    "auto_update": true,
+    "minimum_client_version": "1.13.0"
+}

@@ -1010,7 +1010,7 @@ function buildPanel() {
         </div>
         <div class="qrp-header-buttons">
             <button type="button" class="qrp-icon-btn" data-action="dock" title="오른쪽에 붙이기 / 떠 있는 창"><i class="fa-solid fa-table-columns"></i></button>
-            <button type="button" class="qrp-icon-btn" data-action="settings" title="설정 열기"><i class="fa-solid fa-gear"></i></button>
+            <button type="button" class="qrp-icon-btn" data-action="settings" title="설정"><i class="fa-solid fa-gear"></i></button>
             <button type="button" class="qrp-icon-btn" data-action="close" title="닫기"><i class="fa-solid fa-xmark"></i></button>
         </div>
     </header>
@@ -1018,13 +1018,24 @@ function buildPanel() {
     <div class="qrp-toolbar">
         <label class="qrp-field" title="패널에서 생성할 때 쓸 연결 프로필">
             <i class="fa-solid fa-plug"></i>
-            <select class="qrp-select qrp-profile-select"></select>
+            <select class="qrp-select" data-setting="profileId" data-type="select"></select>
         </label>
         <label class="qrp-field" title="AI가 답할 언어">
             <i class="fa-solid fa-language"></i>
-            <select class="qrp-select qrp-lang-select">${languageOptionsHtml()}</select>
+            <select class="qrp-select" data-setting="outputLanguage" data-type="select">${languageOptionsHtml()}</select>
         </label>
-        <input type="text" class="qrp-input qrp-lang-custom" placeholder="언어 이름 (예: Spanish)">
+        <input type="text" class="qrp-input qrp-lang-custom" data-setting="customLanguage" data-type="text" placeholder="언어 이름 (예: Spanish)">
+    </div>
+
+    <div class="qrp-settings-view" hidden>
+        <div class="qrp-settings-top">
+            <button type="button" class="qrp-back" data-action="settings"><i class="fa-solid fa-arrow-left"></i> 돌아가기</button>
+            <span class="qrp-settings-title">설정</span>
+        </div>
+        <nav class="qrp-settings-nav">
+            ${SETTINGS_NAV.map(([id, text]) => `<button type="button" class="qrp-nav-chip" data-form-action="goto" data-section="${id}">${text}</button>`).join('')}
+        </nav>
+        <div class="qrp-settings-scroll">${settingsFormHtml()}</div>
     </div>
 
     <section class="qrp-qrs">
@@ -1065,7 +1076,7 @@ function buildPanel() {
         const action = e.target.closest('[data-action]')?.dataset.action;
         switch (action) {
             case 'close': togglePanel(false); break;
-            case 'settings': openSettingsDrawer(); break;
+            case 'settings': toggleSettingsView(); break;
             case 'dock': setPanelMode(getSettings().panel.mode === 'dock' ? 'float' : 'dock'); break;
             case 'refresh': renderQrBar(); break;
             case 'edit-order': setEditMode(!editMode); break;
@@ -1074,9 +1085,7 @@ function buildPanel() {
         }
     });
 
-    panel.querySelector('.qrp-profile-select').addEventListener('change', (e) => setProfile(e.target.value));
-    panel.querySelector('.qrp-lang-select').addEventListener('change', (e) => setLanguage(e.target.value));
-    panel.querySelector('.qrp-lang-custom').addEventListener('input', (e) => setCustomLanguage(e.target.value));
+    bindSettingsForm(panel);
     panel.querySelector('.qrp-search-input').addEventListener('input', (e) => {
         searchText = e.target.value.trim().toLowerCase();
         renderQrBar();
@@ -1482,6 +1491,7 @@ function setPanelMode(mode) {
     saveSettings();
     const panel = document.getElementById('qrp_panel');
     if (panel) layoutPanel(panel);
+    syncControls();
 }
 
 function setupDragAndResize(panel) {
@@ -1566,47 +1576,266 @@ function togglePanel(force) {
     if (open) {
         layoutPanel(panel);
         renderAll();
-    } else if (editMode) {
-        setEditMode(false);
+    } else {
+        if (editMode) setEditMode(false);
+        toggleSettingsView(false);
     }
 }
 
-function openSettingsDrawer() {
-    const settingsBlock = document.getElementById('qrp_settings');
-    const extensionsButton = document.querySelector('#extensions-settings-button .drawer-toggle');
-    const extensionsDrawer = document.getElementById('rm_extensions_block');
-    if (extensionsDrawer && !extensionsDrawer.classList.contains('openDrawer') && extensionsButton) {
-        extensionsButton.click();
+function toggleSettingsView(force) {
+    const panel = document.getElementById('qrp_panel');
+    if (!panel) return;
+    const on = typeof force === 'boolean' ? force : !panel.classList.contains('qrp-show-settings');
+    if (on && editMode) setEditMode(false);
+    panel.classList.toggle('qrp-show-settings', on);
+    panel.querySelector('.qrp-settings-view').hidden = !on;
+    if (on) {
+        syncControls();
+        panel.querySelector('.qrp-settings-scroll').scrollTop = 0;
     }
-    const content = settingsBlock?.querySelector('.inline-drawer-content');
-    if (content && getComputedStyle(content).display === 'none') {
-        settingsBlock.querySelector('.inline-drawer-toggle')?.click();
-    }
-    setTimeout(() => settingsBlock?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 300);
 }
 
 // ---------------------------------------------------------------------------
-// Shared controls (panel toolbar + settings drawer)
+// Settings form, shared by the panel's settings view and the Extensions drawer.
+// Controls carry data-setting="<key>" and stay in sync through syncControls().
 // ---------------------------------------------------------------------------
 
-function setProfile(id) {
-    getSettings().profileId = id;
-    saveSettings();
-    syncControls();
+const SETTINGS_NAV = [
+    ['screen', '화면'],
+    ['generation', '생성'],
+    ['context', '맥락'],
+    ['script', '스크립트'],
+    ['qrs', 'QR 표시'],
+    ['translate', '번역'],
+    ['history', '기록'],
+    ['prompts', '지시문'],
+];
+
+function settingsFormHtml() {
+    const option = (value, text) => `<option value="${escapeHtml(value)}">${escapeHtml(text)}</option>`;
+    return `
+<div class="qrp-form">
+    <section class="qrp-form-section" data-section="screen">
+        <h4><i class="fa-solid fa-display"></i> 화면</h4>
+        <label class="qrp-form-label">패널 글자와 버튼 크기
+            <select class="text_pole qrp-control" data-setting="uiScale" data-type="select">
+                ${option('md', '보통')}${option('lg', '크게')}${option('xl', '아주 크게')}
+            </select>
+        </label>
+        <label class="qrp-form-label">창 모드
+            <select class="text_pole qrp-control" data-setting="panelMode" data-type="select">
+                ${option('float', '떠 있는 창')}${option('dock', '오른쪽에 붙이기')}
+            </select>
+        </label>
+        <small>휴대폰처럼 좁은 화면에서는 항상 전체 화면으로 열려요.</small>
+    </section>
+
+    <section class="qrp-form-section" data-section="generation">
+        <h4><i class="fa-solid fa-plug"></i> 생성</h4>
+        <label class="qrp-form-label">연결 프로필
+            <select class="text_pole qrp-control" data-setting="profileId" data-type="select"></select>
+        </label>
+        <small>"현재 연결 사용"이면 지금 채팅에 쓰는 API로 생성해요. 다른 프로필을 고르면 본 채팅 연결은 그대로 두고 패널만 그 프로필로 생성해요.</small>
+        <label class="qrp-form-label">최대 응답 길이 (토큰)
+            <input type="number" class="text_pole qrp-control" data-setting="maxTokens" data-type="number" min="16" max="32000" step="16">
+        </label>
+        <label class="qrp-form-label">출력 언어
+            <select class="text_pole qrp-control" data-setting="outputLanguage" data-type="select">${languageOptionsHtml()}</select>
+        </label>
+        <input type="text" class="text_pole qrp-control qrp-lang-custom" data-setting="customLanguage" data-type="text" placeholder="언어 이름을 영어로 (예: Spanish)">
+    </section>
+
+    <section class="qrp-form-section" data-section="context">
+        <h4><i class="fa-solid fa-book-open"></i> 맥락</h4>
+        <label class="qrp-form-label">새 QR 버튼의 기본 맥락
+            <select class="text_pole qrp-control" data-setting="defaultMode" data-type="select">
+                ${MODE_ORDER.map(m => option(m, CONTEXT_MODES[m])).join('')}
+            </select>
+        </label>
+        <small>버튼 오른쪽의 작은 표시를 누르면 버튼마다 따로 바꿀 수 있어요.</small>
+        <label class="qrp-form-label">최근 대화로 넣을 메시지 수
+            <input type="number" class="text_pole qrp-control" data-setting="recentCount" data-type="number" min="1" max="500">
+        </label>
+        <label class="qrp-form-label">AI 요약에 쓸 최근 메시지 수
+            <input type="number" class="text_pole qrp-control" data-setting="summaryRange" data-type="number" min="1" max="1000">
+        </label>
+        <label class="checkbox_label qrp-check"><input type="checkbox" data-setting="includeCharInfo" data-type="checkbox"> 캐릭터 설명, 성격, 시나리오, 페르소나 함께 보내기</label>
+    </section>
+
+    <section class="qrp-form-section" data-section="script">
+        <h4><i class="fa-solid fa-code"></i> 스크립트 QR</h4>
+        <small>패널에서 실행한 스크립트의 <code>/send</code>, <code>/sendas</code>, <code>/sys</code>, <code>/comment</code>, <code>/setinput</code>은 채팅 대신 패널로 와요. <code>/trigger</code>, <code>/continue</code>, <code>/inject</code>, <code>/hide</code>처럼 본 채팅을 바꾸는 명령은 막아요. 본 채팅에서 직접 누른 QR은 원래대로 작동해요.</small>
+        <label class="checkbox_label qrp-check"><input type="checkbox" data-setting="sandboxGen" data-type="checkbox"> 스크립트 안의 <code>/gen</code>도 패널 설정(프로필, 맥락, 출력 언어)으로 생성</label>
+        <small>끄면 <code>/gen</code>은 ST의 현재 연결과 본 채팅 프롬프트로 생성해요.</small>
+    </section>
+
+    <section class="qrp-form-section" data-section="qrs">
+        <h4><i class="fa-solid fa-layer-group"></i> QR 표시</h4>
+        <label class="checkbox_label qrp-check"><input type="checkbox" data-setting="showHidden" data-type="checkbox"> 메인 QR 바에서 숨긴 QR도 패널에 표시</label>
+        <label class="checkbox_label qrp-check"><input type="checkbox" data-special="allSets"> 모든 QR 세트 표시</label>
+        <div class="qrp-set-list"></div>
+        <button type="button" class="menu_button qrp-form-btn" data-form-action="reset-order"><i class="fa-solid fa-arrow-rotate-left"></i> 패널 순서 초기화</button>
+    </section>
+
+    <section class="qrp-form-section" data-section="translate">
+        <h4><i class="fa-solid fa-language"></i> 번역</h4>
+        <label class="qrp-form-label">번역 방식
+            <select class="text_pole qrp-control" data-setting="translateProvider" data-type="select">
+                ${option('interpres', 'Interpres 설정 사용')}${option('command', '슬래시 명령')}
+            </select>
+        </label>
+        <div class="qrp-status qrp-provider-interpres qrp-interpres-status"></div>
+        <small class="qrp-provider-interpres">Interpres의 언어, 말투 카드, 용어집, 독자 지시문, 번역 톤, 모델 연결을 그대로 써요. Interpres에서 프롬프트를 직접 고쳤다면 그 프롬프트를 써요. 패널 번역은 Interpres의 번역 기억(캐시)에 저장되지 않아요.</small>
+        <label class="qrp-form-label qrp-provider-command">번역 명령
+            <input type="text" class="text_pole qrp-control" data-setting="translateCommand" data-type="text" placeholder="/translate {{text}}">
+        </label>
+        <small class="qrp-provider-command"><code>{{text}}</code> 자리에 패널 결과가 들어가요. ST 기본 번역은 <code>/translate {{text}}</code>예요.</small>
+        <label class="checkbox_label qrp-check"><input type="checkbox" data-setting="autoTranslate" data-type="checkbox"> 결과가 나오면 자동으로 번역</label>
+    </section>
+
+    <section class="qrp-form-section" data-section="history">
+        <h4><i class="fa-solid fa-clock-rotate-left"></i> 기록</h4>
+        <label class="qrp-form-label">채팅당 저장할 최대 기록 수
+            <input type="number" class="text_pole qrp-control" data-setting="maxHistory" data-type="number" min="1" max="2000">
+        </label>
+    </section>
+
+    <section class="qrp-form-section" data-section="prompts">
+        <h4><i class="fa-solid fa-scroll"></i> AI 지시문 (영어 권장)</h4>
+        <label class="qrp-form-label">시스템 지시문
+            <textarea class="text_pole qrp-control" data-setting="systemPrompt" data-type="text" rows="7"></textarea>
+        </label>
+        <button type="button" class="menu_button qrp-form-btn" data-form-action="reset-prompt" data-target="systemPrompt">기본값으로 되돌리기</button>
+        <label class="qrp-form-label">요약 지시문
+            <textarea class="text_pole qrp-control" data-setting="summaryPrompt" data-type="text" rows="6"></textarea>
+        </label>
+        <button type="button" class="menu_button qrp-form-btn" data-form-action="reset-prompt" data-target="summaryPrompt">기본값으로 되돌리기</button>
+    </section>
+</div>`;
 }
 
-function setLanguage(value) {
-    getSettings().outputLanguage = value;
-    saveSettings();
-    syncControls();
+const SETTING_EFFECTS = {
+    uiScale: () => {
+        const panel = document.getElementById('qrp_panel');
+        if (panel) applyScale(panel);
+    },
+    outputLanguage: () => syncControls(),
+    translateProvider: () => syncControls(),
+    showHidden: () => renderQrBar(),
+    defaultMode: () => renderQrBar(),
+};
+
+function readControl(el) {
+    switch (el.dataset.type) {
+        case 'checkbox':
+            return el.checked;
+        case 'number': {
+            const n = Number(el.value);
+            return Number.isFinite(n) && n > 0 ? Math.round(n) : undefined;
+        }
+        default:
+            return el.value;
+    }
 }
 
-function setCustomLanguage(value) {
-    getSettings().customLanguage = value;
+function writeControl(el, value) {
+    if (el.dataset.type === 'checkbox') {
+        el.checked = Boolean(value);
+    } else if (document.activeElement !== el && String(el.value) !== String(value ?? '')) {
+        el.value = value ?? '';
+    }
+}
+
+function settingValue(key) {
+    const s = getSettings();
+    return key === 'panelMode' ? s.panel.mode : s[key];
+}
+
+function onSettingEvent(e) {
+    const target = e.target;
+    if (e.type === 'change' && target.matches?.('[data-special="allSets"]')) {
+        const s = getSettings();
+        s.enabledSets = target.checked ? null : (getQrApi()?.listSets() ?? []);
+        saveSettings();
+        syncControls();
+        renderQrBar();
+        return;
+    }
+    if (e.type === 'change' && target.matches?.('input[data-set]')) {
+        const s = getSettings();
+        const list = new Set(s.enabledSets ?? []);
+        if (target.checked) list.add(target.dataset.set); else list.delete(target.dataset.set);
+        s.enabledSets = [...list];
+        saveSettings();
+        syncControls();
+        renderQrBar();
+        return;
+    }
+
+    const el = target.closest?.('[data-setting]');
+    if (!el) return;
+    const type = el.dataset.type;
+    const live = type === 'text' || type === 'number';
+    if (e.type === 'input' && !live) return;
+    if (e.type === 'change' && live) return;
+
+    const key = el.dataset.setting;
+    const value = readControl(el);
+    if (value === undefined) return;
+    if (key === 'panelMode') {
+        setPanelMode(value);
+        return;
+    }
+    getSettings()[key] = value;
     saveSettings();
-    document.querySelectorAll('.qrp-lang-custom').forEach(el => {
-        if (el.value !== value) el.value = value;
+    document.querySelectorAll(`[data-setting="${key}"]`).forEach(other => {
+        if (other !== el) writeControl(other, value);
     });
+    SETTING_EFFECTS[key]?.();
+}
+
+function onSettingClick(e) {
+    const btn = e.target.closest('[data-form-action]');
+    if (!btn) return;
+    const s = getSettings();
+    switch (btn.dataset.formAction) {
+        case 'reset-order':
+            s.setOrder = [];
+            s.qrOrder = {};
+            saveSettings();
+            renderQrBar();
+            toastr.success('패널의 QR 순서를 Quick Reply 원래 순서로 되돌렸어요.', 'QR 패널');
+            break;
+        case 'reset-prompt': {
+            const key = btn.dataset.target;
+            s[key] = defaultSettings[key];
+            saveSettings();
+            document.querySelectorAll(`[data-setting="${key}"]`).forEach(el => {
+                el.value = defaultSettings[key];
+            });
+            toastr.success('기본값으로 되돌렸어요.', 'QR 패널', { timeOut: 1500 });
+            break;
+        }
+        case 'open-panel':
+            togglePanel();
+            break;
+        case 'goto': {
+            const view = btn.closest('.qrp-settings-view');
+            const section = view?.querySelector(`.qrp-form-section[data-section="${btn.dataset.section}"]`);
+            const scroller = view?.querySelector('.qrp-settings-scroll');
+            if (section && scroller) {
+                const offset = section.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+                scroller.scrollTo({ top: scroller.scrollTop + offset - 6, behavior: 'smooth' });
+            }
+            break;
+        }
+    }
+}
+
+function bindSettingsForm(root) {
+    root.addEventListener('input', onSettingEvent);
+    root.addEventListener('change', onSettingEvent);
+    root.addEventListener('click', onSettingClick);
 }
 
 function profileOptionsHtml() {
@@ -1624,32 +1853,55 @@ function profileOptionsHtml() {
     return html;
 }
 
+/** Pushes the current settings into every settings control (panel toolbar, panel settings view, drawer). */
 function syncControls() {
     const s = getSettings();
     const options = profileOptionsHtml();
-    document.querySelectorAll('.qrp-profile-select').forEach(sel => {
+    document.querySelectorAll('[data-setting="profileId"]').forEach(sel => {
         sel.innerHTML = options;
         sel.value = s.profileId;
     });
-    document.querySelectorAll('.qrp-lang-select').forEach(sel => {
-        sel.value = s.outputLanguage;
+    document.querySelectorAll('[data-setting]').forEach(el => {
+        if (el.dataset.setting !== 'profileId') writeControl(el, settingValue(el.dataset.setting));
     });
     document.querySelectorAll('.qrp-lang-custom').forEach(el => {
         el.style.display = s.outputLanguage === '__custom' ? '' : 'none';
-        if (el.value !== s.customLanguage) el.value = s.customLanguage;
     });
-    const status = document.querySelector('#qrp_settings .qrp-interpres-status');
-    if (status) status.textContent = interpresStatusText();
-    document.querySelectorAll('#qrp_settings .qrp-provider-command').forEach(el => {
+    const statusText = interpresStatusText();
+    document.querySelectorAll('.qrp-interpres-status').forEach(el => {
+        el.textContent = statusText;
+        el.classList.toggle('qrp-status-warn', !getInterpresSettings());
+    });
+    document.querySelectorAll('.qrp-provider-command').forEach(el => {
         el.style.display = s.translateProvider === 'command' ? '' : 'none';
     });
-    document.querySelectorAll('#qrp_settings .qrp-provider-interpres').forEach(el => {
+    document.querySelectorAll('.qrp-provider-interpres').forEach(el => {
         el.style.display = s.translateProvider === 'command' ? 'none' : '';
+    });
+    document.querySelectorAll('[data-special="allSets"]').forEach(el => {
+        el.checked = !Array.isArray(s.enabledSets);
+    });
+    renderSetList();
+}
+
+function renderSetList() {
+    const s = getSettings();
+    const names = getQrApi()?.listSets() ?? [];
+    document.querySelectorAll('.qrp-set-list').forEach(box => {
+        if (!Array.isArray(s.enabledSets)) {
+            box.innerHTML = '';
+            box.style.display = 'none';
+            return;
+        }
+        box.style.display = '';
+        box.innerHTML = names.length
+            ? names.map(n => `<label class="checkbox_label qrp-check"><input type="checkbox" data-set="${escapeHtml(n)}" ${s.enabledSets.includes(n) ? 'checked' : ''}> ${escapeHtml(n)}</label>`).join('')
+            : '<small>QR 세트가 없어요.</small>';
     });
 }
 
 // ---------------------------------------------------------------------------
-// Settings drawer
+// Settings drawer (Extensions panel)
 // ---------------------------------------------------------------------------
 
 function buildSettingsUi() {
@@ -1662,74 +1914,9 @@ function buildSettingsUi() {
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
-            <div class="menu_button qrp-open-btn"><i class="fa-solid fa-layer-group"></i> 패널 열기 / 닫기</div>
-
-            <h4>화면</h4>
-            <label for="qrp_ui_scale">패널 글자와 버튼 크기</label>
-            <select id="qrp_ui_scale" class="text_pole">
-                <option value="md">보통</option>
-                <option value="lg">크게</option>
-                <option value="xl">아주 크게</option>
-            </select>
-            <small>패널 위쪽 <i class="fa-solid fa-table-columns"></i> 버튼으로 화면 오른쪽에 붙이거나 떠 있는 창으로 바꿀 수 있어요.</small>
-
-            <h4>생성</h4>
-            <label>연결 프로필</label>
-            <select class="text_pole qrp-profile-select"></select>
-            <small>"현재 연결 사용"이면 지금 채팅에 쓰는 API로 생성해요. 다른 프로필을 고르면 본 채팅 연결은 바꾸지 않고 패널만 그 프로필로 생성해요.</small>
-            <label for="qrp_max_tokens">최대 응답 길이 (토큰)</label>
-            <input id="qrp_max_tokens" type="number" class="text_pole" min="16" max="32000" step="16">
-            <label>출력 언어</label>
-            <select class="text_pole qrp-lang-select">${languageOptionsHtml()}</select>
-            <input type="text" class="text_pole qrp-lang-custom" placeholder="언어 이름을 영어로 (예: Spanish)">
-
-            <h4>스크립트 QR</h4>
-            <small>패널에서 실행한 스크립트의 <code>/send</code>, <code>/sendas</code>, <code>/sys</code>, <code>/comment</code>, <code>/setinput</code>은 채팅 대신 패널로 와요. <code>/trigger</code>, <code>/continue</code>, <code>/inject</code>, <code>/hide</code>처럼 본 채팅을 바꾸는 명령은 막아요. 본 채팅에서 직접 누른 QR은 원래대로 작동해요.</small>
-            <label class="checkbox_label"><input id="qrp_sandbox_gen" type="checkbox"> 스크립트 안의 <code>/gen</code>도 패널 설정(프로필, 맥락, 출력 언어)으로 생성</label>
-            <small>끄면 <code>/gen</code>은 ST의 현재 연결과 본 채팅 프롬프트로 생성해요.</small>
-
-            <h4>맥락</h4>
-            <label for="qrp_default_mode">새 QR 버튼의 기본 맥락</label>
-            <select id="qrp_default_mode" class="text_pole">
-                ${MODE_ORDER.map(m => `<option value="${m}">${CONTEXT_MODES[m]}</option>`).join('')}
-            </select>
-            <small>버튼 오른쪽의 작은 표시를 누르면 버튼마다 맥락을 바꿀 수 있어요.</small>
-            <label for="qrp_recent_count">최근 대화로 넣을 메시지 수</label>
-            <input id="qrp_recent_count" type="number" class="text_pole" min="1" max="500">
-            <label for="qrp_summary_range">AI 요약에 쓸 최근 메시지 수</label>
-            <input id="qrp_summary_range" type="number" class="text_pole" min="1" max="1000">
-            <label class="checkbox_label"><input id="qrp_char_info" type="checkbox"> 캐릭터 설명, 성격, 시나리오, 페르소나 함께 보내기</label>
-
-            <h4>QR 표시</h4>
-            <label class="checkbox_label"><input id="qrp_show_hidden" type="checkbox"> 메인 QR 바에서 숨긴 QR도 패널에 표시</label>
-            <label class="checkbox_label"><input id="qrp_all_sets" type="checkbox"> 모든 QR 세트 표시</label>
-            <div class="qrp-set-list"></div>
-            <div class="menu_button qrp-reset-order"><i class="fa-solid fa-arrow-rotate-left"></i> 패널 순서 초기화</div>
-
-            <h4>번역</h4>
-            <label for="qrp_translate_provider">번역 방식</label>
-            <select id="qrp_translate_provider" class="text_pole">
-                <option value="interpres">Interpres 설정 사용</option>
-                <option value="command">슬래시 명령</option>
-            </select>
-            <small class="qrp-provider-interpres qrp-interpres-status"></small>
-            <small class="qrp-provider-interpres">Interpres의 언어, 말투 카드, 용어집, 독자 지시문, 번역 톤, 모델 연결을 그대로 써요. Interpres에서 프롬프트를 직접 고쳤다면 그 프롬프트를 써요. 패널 번역은 Interpres의 번역 기억(캐시)에 저장되지 않아요.</small>
-            <label for="qrp_translate_cmd" class="qrp-provider-command">번역 명령</label>
-            <input id="qrp_translate_cmd" type="text" class="text_pole qrp-provider-command" placeholder="/translate {{text}}">
-            <small class="qrp-provider-command"><code>{{text}}</code> 자리에 패널 결과가 들어가요. ST 기본 번역은 <code>/translate {{text}}</code>예요.</small>
-            <label class="checkbox_label"><input id="qrp_auto_translate" type="checkbox"> 결과가 나오면 자동으로 번역</label>
-
-            <h4>기록</h4>
-            <label for="qrp_max_history">채팅당 저장할 최대 기록 수</label>
-            <input id="qrp_max_history" type="number" class="text_pole" min="1" max="2000">
-
-            <h4>AI 지시문 (영어 권장)</h4>
-            <label for="qrp_system_prompt">시스템 지시문</label>
-            <textarea id="qrp_system_prompt" class="text_pole" rows="6"></textarea>
-            <div class="menu_button qrp-reset" data-target="systemPrompt">기본값으로 되돌리기</div>
-            <label for="qrp_summary_prompt">요약 지시문</label>
-            <textarea id="qrp_summary_prompt" class="text_pole" rows="5"></textarea>
-            <div class="menu_button qrp-reset" data-target="summaryPrompt">기본값으로 되돌리기</div>
+            <button type="button" class="menu_button qrp-form-btn" data-form-action="open-panel"><i class="fa-solid fa-layer-group"></i> 패널 열기 / 닫기</button>
+            <small>모든 설정은 패널 오른쪽 위 <i class="fa-solid fa-gear"></i> 버튼에서도 바꿀 수 있어요.</small>
+            ${settingsFormHtml()}
         </div>
     </div>
 </div>`;
@@ -1737,126 +1924,10 @@ function buildSettingsUi() {
     container?.insertAdjacentHTML('beforeend', html);
     const root = document.getElementById('qrp_settings');
     if (!root) return;
-
-    const s = getSettings();
-    const bindNumber = (sel, key) => {
-        const el = root.querySelector(sel);
-        el.value = s[key];
-        el.addEventListener('input', () => {
-            const n = Number(el.value);
-            if (Number.isFinite(n) && n > 0) {
-                getSettings()[key] = Math.round(n);
-                saveSettings();
-            }
-        });
-    };
-    const bindCheckbox = (sel, key, after) => {
-        const el = root.querySelector(sel);
-        el.checked = Boolean(s[key]);
-        el.addEventListener('change', () => {
-            getSettings()[key] = el.checked;
-            saveSettings();
-            after?.();
-        });
-    };
-    const bindText = (sel, key) => {
-        const el = root.querySelector(sel);
-        el.value = s[key];
-        el.addEventListener('input', () => {
-            getSettings()[key] = el.value;
-            saveSettings();
-        });
-    };
-    const bindSelect = (sel, key, after) => {
-        const el = root.querySelector(sel);
-        el.value = s[key];
-        el.addEventListener('change', () => {
-            getSettings()[key] = el.value;
-            saveSettings();
-            after?.();
-        });
-    };
-
-    root.querySelector('.qrp-open-btn').addEventListener('click', () => togglePanel());
-    root.querySelector('.qrp-profile-select').addEventListener('change', (e) => setProfile(e.target.value));
-    root.querySelector('.qrp-lang-select').addEventListener('change', (e) => setLanguage(e.target.value));
-    root.querySelector('.qrp-lang-custom').addEventListener('input', (e) => setCustomLanguage(e.target.value));
-
-    bindSelect('#qrp_ui_scale', 'uiScale', () => {
-        const panel = document.getElementById('qrp_panel');
-        if (panel) applyScale(panel);
-    });
-    bindNumber('#qrp_max_tokens', 'maxTokens');
-    bindNumber('#qrp_recent_count', 'recentCount');
-    bindNumber('#qrp_summary_range', 'summaryRange');
-    bindNumber('#qrp_max_history', 'maxHistory');
-    bindCheckbox('#qrp_char_info', 'includeCharInfo');
-    bindCheckbox('#qrp_show_hidden', 'showHidden', renderQrBar);
-    bindCheckbox('#qrp_auto_translate', 'autoTranslate');
-    bindCheckbox('#qrp_sandbox_gen', 'sandboxGen');
-    bindSelect('#qrp_translate_provider', 'translateProvider', syncControls);
-    bindSelect('#qrp_default_mode', 'defaultMode', renderQrBar);
-    bindText('#qrp_translate_cmd', 'translateCommand');
-    bindText('#qrp_system_prompt', 'systemPrompt');
-    bindText('#qrp_summary_prompt', 'summaryPrompt');
-
-    const allSets = root.querySelector('#qrp_all_sets');
-    allSets.checked = !Array.isArray(s.enabledSets);
-    allSets.addEventListener('change', () => {
-        const settings = getSettings();
-        settings.enabledSets = allSets.checked ? null : (getQrApi()?.listSets() ?? []);
-        saveSettings();
-        renderSetList();
-        renderQrBar();
-    });
-    root.querySelector('.qrp-set-list').addEventListener('change', (e) => {
-        const box = e.target.closest('input[data-set]');
-        if (!box) return;
-        const settings = getSettings();
-        const list = new Set(settings.enabledSets ?? []);
-        if (box.checked) list.add(box.dataset.set); else list.delete(box.dataset.set);
-        settings.enabledSets = [...list];
-        saveSettings();
-        renderQrBar();
-    });
-    root.querySelector('.qrp-reset-order').addEventListener('click', () => {
-        const settings = getSettings();
-        settings.setOrder = [];
-        settings.qrOrder = {};
-        saveSettings();
-        renderQrBar();
-        toastr.success('패널의 QR 순서를 Quick Reply 원래 순서로 되돌렸어요.', 'QR 패널');
-    });
-
-    root.querySelectorAll('.qrp-reset').forEach(btn => btn.addEventListener('click', () => {
-        const key = btn.dataset.target;
-        getSettings()[key] = defaultSettings[key];
-        saveSettings();
-        root.querySelector(key === 'systemPrompt' ? '#qrp_system_prompt' : '#qrp_summary_prompt').value = defaultSettings[key];
-    }));
-
-    // Refresh lists whenever the drawer is opened, so new QR sets and Interpres changes show up.
-    root.querySelector('.inline-drawer-toggle').addEventListener('click', () => setTimeout(() => {
-        renderSetList();
-        syncControls();
-    }, 50));
-    renderSetList();
-}
-
-function renderSetList() {
-    const box = document.querySelector('#qrp_settings .qrp-set-list');
-    if (!box) return;
-    const s = getSettings();
-    if (!Array.isArray(s.enabledSets)) {
-        box.innerHTML = '';
-        box.style.display = 'none';
-        return;
-    }
-    box.style.display = '';
-    const names = getQrApi()?.listSets() ?? [];
-    box.innerHTML = names.length
-        ? names.map(n => `<label class="checkbox_label"><input type="checkbox" data-set="${escapeHtml(n)}" ${s.enabledSets.includes(n) ? 'checked' : ''}> ${escapeHtml(n)}</label>`).join('')
-        : '<small>QR 세트가 없어요.</small>';
+    bindSettingsForm(root);
+    // Refresh when the drawer opens, so new QR sets, profiles and Interpres changes show up.
+    root.querySelector('.inline-drawer-toggle').addEventListener('click', () => setTimeout(syncControls, 50));
+    syncControls();
 }
 
 // ---------------------------------------------------------------------------

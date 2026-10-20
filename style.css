@@ -813,6 +813,250 @@
     text-decoration: underline;
 }
 
+
+/* In-panel settings view */
+.qrp-settings-view {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    border-top: 1px solid var(--qrp-line);
+}
+
+.qrp-settings-view[hidden] {
+    display: none;
+}
+
+.qrp-show-settings .qrp-toolbar,
+.qrp-show-settings .qrp-qrs,
+.qrp-show-settings .qrp-summary,
+.qrp-show-settings .qrp-history,
+.qrp-show-settings .qrp-footer {
+    display: none !important;
+}
+
+.qrp-show-settings [data-action="settings"].qrp-icon-btn {
+    color: var(--qrp-accent) !important;
+    background: color-mix(in srgb, var(--qrp-accent) 16%, transparent) !important;
+}
+
+.qrp-settings-top {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px 4px;
+}
+
+.qrp-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 6px 10px !important;
+    border-radius: 9px;
+    font-size: 0.88em !important;
+    color: var(--qrp-muted) !important;
+}
+
+.qrp-back:hover {
+    color: var(--qrp-fg) !important;
+    background: var(--qrp-surface-hover) !important;
+}
+
+.qrp-settings-title {
+    font-weight: 700;
+}
+
+.qrp-settings-nav {
+    display: flex;
+    gap: 6px;
+    padding: 6px 14px 10px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    border-bottom: 1px solid var(--qrp-line);
+}
+
+.qrp-settings-nav::-webkit-scrollbar {
+    display: none;
+}
+
+.qrp-nav-chip {
+    flex-shrink: 0;
+    padding: 4px 11px !important;
+    border-radius: 999px;
+    font-size: 0.8em !important;
+    color: var(--qrp-muted) !important;
+    background: var(--qrp-surface) !important;
+    border: 1px solid var(--qrp-line) !important;
+}
+
+.qrp-nav-chip:hover {
+    color: var(--qrp-fg) !important;
+    border-color: color-mix(in srgb, var(--qrp-accent) 45%, transparent) !important;
+}
+
+.qrp-settings-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 12px 14px 24px;
+}
+
+.qrp-panel .qrp-form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.qrp-panel .qrp-form-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px 16px 16px;
+    border-radius: var(--qrp-radius);
+    background: var(--qrp-surface);
+    border: 1px solid var(--qrp-line);
+}
+
+.qrp-panel .qrp-form-section h4 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 2px;
+    font-size: 0.95em;
+}
+
+.qrp-panel .qrp-form-section h4 i {
+    color: var(--qrp-accent);
+    font-size: 0.9em;
+    width: 1.1em;
+    text-align: center;
+}
+
+.qrp-panel .qrp-form-label {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin: 0;
+    font-size: 0.86em;
+    color: var(--qrp-muted);
+}
+
+.qrp-panel .qrp-control {
+    width: 100%;
+    margin: 0;
+    padding: 8px 10px;
+    font: inherit;
+    font-size: 1.08em;
+    color: var(--qrp-fg);
+    background: var(--qrp-surface-2);
+    border: 1px solid var(--qrp-line);
+    border-radius: 9px;
+    outline: none;
+}
+
+.qrp-panel .qrp-control:focus {
+    border-color: color-mix(in srgb, var(--qrp-accent) 60%, transparent);
+}
+
+.qrp-panel textarea.qrp-control {
+    resize: vertical;
+    line-height: 1.5;
+    font-size: 0.95em;
+}
+
+.qrp-panel select.qrp-control option {
+    color: initial;
+}
+
+.qrp-panel .qrp-form small {
+    display: block;
+    margin: -2px 0 0;
+    font-size: 0.78em;
+    line-height: 1.5;
+    color: var(--qrp-muted);
+}
+
+.qrp-panel .qrp-form code {
+    font-size: 0.95em;
+    padding: 0 4px;
+    border-radius: 4px;
+    background: var(--qrp-surface-2);
+}
+
+.qrp-panel .qrp-check {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    margin: 2px 0;
+    font-size: 0.9em;
+    cursor: pointer;
+}
+
+.qrp-panel .qrp-check input {
+    margin: 0.2em 0 0;
+    flex-shrink: 0;
+    accent-color: var(--qrp-accent);
+}
+
+.qrp-panel .qrp-set-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px 0 4px 22px;
+}
+
+.qrp-form-btn {
+    width: fit-content;
+    white-space: nowrap;
+}
+
+.qrp-panel .qrp-form-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    margin: 2px 0 0;
+    padding: 6px 12px !important;
+    border-radius: 9px;
+    font-size: 0.84em !important;
+    color: var(--qrp-fg) !important;
+    background: var(--qrp-surface-2) !important;
+    border: 1px solid var(--qrp-line) !important;
+}
+
+.qrp-panel .qrp-form-btn:hover {
+    background: var(--qrp-surface-hover) !important;
+}
+
+.qrp-status {
+    padding: 7px 10px;
+    border-radius: 8px;
+    font-size: 0.82em;
+    color: var(--qrp-fg);
+    background: color-mix(in srgb, var(--qrp-accent) 12%, transparent);
+}
+
+.qrp-status.qrp-status-warn {
+    background: color-mix(in srgb, #e6a23c 18%, transparent);
+}
+
+/* Drawer copy of the form */
+.qrp-settings .qrp-form-section {
+    margin-top: 10px;
+}
+
+.qrp-settings .qrp-form-section h4 {
+    margin: 12px 0 4px;
+}
+
+.qrp-settings .qrp-form-label {
+    display: block;
+    margin-top: 6px;
+}
+
+.qrp-settings .qrp-form-btn {
+    margin-top: 4px;
+}
+
 /* Settings drawer */
 .qrp-settings h4 {
     margin: 14px 0 4px;

@@ -106,6 +106,9 @@ const defaultSettings = Object.freeze({
     qrOrder: {},
     collapsedSets: {},
     sandboxGen: true,
+    presetByProfile: {},
+    resultView: 'cards',
+    listSort: 'newest',
     translateProvider: 'interpres',
     translateCommand: '/translate {{text}}',
     autoTranslate: false,
@@ -153,7 +156,7 @@ function getSettings() {
     }
     s.version = SETTINGS_VERSION;
     s.panel = Object.assign({}, defaultSettings.panel, s.panel);
-    for (const key of ['qrModes', 'qrOrder', 'collapsedSets']) {
+    for (const key of ['qrModes', 'qrOrder', 'collapsedSets', 'presetByProfile']) {
         if (!s[key] || typeof s[key] !== 'object' || Array.isArray(s[key])) s[key] = {};
     }
     if (!Array.isArray(s.setOrder)) s.setOrder = [];
@@ -354,7 +357,80 @@ function getProfiles() {
 function getProfileLabel() {
     const s = getSettings();
     if (!s.profileId) return '현재 연결';
-    return getProfiles().find(p => p.id === s.profileId)?.name ?? '알 수 없는 프로필';
+    const name = getProfiles().find(p => p.id === s.profileId)?.name ?? '알 수 없는 프로필';
+    const preset = getPresetChoice(s.profileId);
+    if (preset === '__none') return `${name} · 프리셋 없음`;
+    return preset ? `${name} · ${preset}` : name;
+}
+
+// ---------------------------------------------------------------------------
+// Presets: take only the API connection from a profile, pick the preset separately
+// ---------------------------------------------------------------------------
+
+/** '' = the profile's own preset, '__none' = no preset (defaults), otherwise a preset name. */
+function getPresetChoice(profileId) {
+    return profileId ? String(getSettings().presetByProfile[profileId] ?? '') : '';
+}
+
+function getProfileById(profileId) {
+    return SillyTavern.getContext().extensionSettings?.connectionManager?.profiles?.find(p => p.id === profileId) ?? null;
+}
+
+/** Preset names for the profile's API type (Chat Completion or Text Completion). */
+function getPresetNamesForProfile(profileId) {
+    const ctx = SillyTavern.getContext();
+    const profile = getProfileById(profileId);
+    const type = ctx.CONNECT_API_MAP?.[profile?.api]?.selected;
+    if (!type) return [];
+    try {
+        return [...new Set(ctx.getPresetManager?.(type)?.getAllPresets?.() ?? [])].filter(Boolean);
+    } catch {
+        return [];
+    }
+}
+
+function presetOptionsHtml(profileId) {
+    const profile = getProfileById(profileId);
+    const choice = getPresetChoice(profileId);
+    const names = getPresetNamesForProfile(profileId);
+    let html = `<option value="">프로필에 저장된 프리셋${profile?.preset ? ` (${escapeHtml(profile.preset)})` : ' (없음)'}</option>`;
+    html += '<option value="__none">프리셋 없이 (기본값)</option>';
+    html += names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
+    if (choice && choice !== '__none' && !names.includes(choice)) {
+        html += `<option value="${escapeHtml(choice)}">${escapeHtml(choice)} (찾을 수 없음)</option>`;
+    }
+    return html;
+}
+
+/**
+ * Sends a Connection Manager request with the profile's API connection but another preset.
+ * ConnectionManagerRequestService reads the profile synchronously when the call starts, so a
+ * temporary copy (same connection, different preset) is added for that moment and removed
+ * before anything awaits. The user's saved profile is never modified.
+ */
+async function sendWithPreset(service, profileId, presetName, messages, maxTokens, custom) {
+    const profiles = SillyTavern.getContext().extensionSettings?.connectionManager?.profiles;
+    const base = getProfileById(profileId);
+    if (!profiles || !base) return service.sendRequest(profileId, messages, maxTokens, custom);
+    const tempId = `qrp-temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    profiles.push({ ...structuredClone(base), id: tempId, name: `${base.name} (QR 패널 임시)`, preset: presetName });
+    let promise;
+    try {
+        promise = service.sendRequest(tempId, messages, maxTokens, { ...custom, includePreset: true });
+    } finally {
+        const i = profiles.findIndex(p => p.id === tempId);
+        if (i >= 0) profiles.splice(i, 1);
+    }
+    try {
+        return await promise;
+    } catch (err) {
+        if (errorText(err).includes(tempId)) {
+            console.warn(LOG_PREFIX, 'Separate preset not supported by this ST version; using the profile preset', err);
+            toastr.warning('이 ST 버전에서는 프리셋을 따로 고를 수 없어서 프로필에 저장된 프리셋으로 생성했어요.', 'QR 패널');
+            return service.sendRequest(profileId, messages, maxTokens, { ...custom, includePreset: true });
+        }
+        throw err;
+    }
 }
 
 function errorText(err) {
@@ -375,12 +451,16 @@ async function generateText({ system, user, signal }) {
             { role: 'system', content: system },
             { role: 'user', content: user },
         ];
-        const result = await service.sendRequest(s.profileId, messages, maxTokens, {
-            stream: false,
-            signal,
-            extractData: true,
-            includePreset: true,
-        });
+        const custom = { stream: false, signal, extractData: true, includePreset: true };
+        const preset = getPresetChoice(s.profileId);
+        let result;
+        if (preset === '__none') {
+            result = await service.sendRequest(s.profileId, messages, maxTokens, { ...custom, includePreset: false });
+        } else if (preset) {
+            result = await sendWithPreset(service, s.profileId, preset, messages, maxTokens, custom);
+        } else {
+            result = await service.sendRequest(s.profileId, messages, maxTokens, custom);
+        }
         return typeof result === 'string' ? result : String(result?.content ?? '');
     }
 
@@ -1114,6 +1194,10 @@ function buildPanel() {
                 <i class="fa-solid fa-plug"></i>
                 <select class="qrp-select" data-setting="profileId" data-type="select"></select>
             </label>
+            <label class="qrp-field qrp-preset-field" title="프로필의 API 연결은 그대로 쓰고 프리셋만 따로 골라요">
+                <i class="fa-solid fa-sliders"></i>
+                <select class="qrp-select" data-special="preset"></select>
+            </label>
             <label class="qrp-field" title="AI가 답할 언어">
                 <i class="fa-solid fa-language"></i>
                 <select class="qrp-select" data-setting="outputLanguage" data-type="select">${languageOptionsHtml()}</select>
@@ -1136,6 +1220,23 @@ function buildPanel() {
                 <div class="qrp-qrbar"></div>
             </section>
             <section class="qrp-results">
+                <div class="qrp-results-tools">
+                    <div class="qrp-seg" role="group" aria-label="보기 방식">
+                        <button type="button" class="qrp-view-btn" data-view="cards" title="카드로 보기"><i class="fa-solid fa-table-cells-large"></i><span>카드</span></button>
+                        <button type="button" class="qrp-view-btn" data-view="list" title="목록으로 보기"><i class="fa-solid fa-list"></i><span>목록</span></button>
+                    </div>
+                    <label class="qrp-field qrp-filter-field" title="QR별로 보기">
+                        <i class="fa-solid fa-filter"></i>
+                        <select class="qrp-select qrp-filter-qr"></select>
+                    </label>
+                    <label class="qrp-search qrp-results-search">
+                        <i class="fa-solid fa-magnifying-glass"></i>
+                        <input type="search" class="qrp-results-search-input" placeholder="결과 검색">
+                    </label>
+                    <button type="button" class="qrp-tool-btn" data-action="toggle-sort" title="정렬 바꾸기"></button>
+                    <button type="button" class="qrp-tool-btn" data-action="expand-rows" title="모두 펼치기"><i class="fa-solid fa-angles-down"></i></button>
+                    <button type="button" class="qrp-tool-btn" data-action="collapse-rows" title="모두 접기"><i class="fa-solid fa-angles-up"></i></button>
+                </div>
                 <div class="qrp-history"></div>
                 <footer class="qrp-footer">
                     <span class="qrp-count"></span>
@@ -1183,6 +1284,23 @@ function buildPanel() {
             }
             case 'refresh': renderQrBar(); break;
             case 'edit-order': setEditMode(!editMode); break;
+            case 'toggle-sort': {
+                const st = getSettings();
+                st.listSort = st.listSort === 'oldest' ? 'newest' : 'oldest';
+                saveSettings();
+                renderHistory(true);
+                break;
+            }
+            case 'expand-rows': {
+                const state = getChatState();
+                for (const e of filterEntries(state?.history ?? [])) openRows.add(e.id);
+                renderHistory();
+                break;
+            }
+            case 'collapse-rows':
+                openRows.clear();
+                renderHistory();
+                break;
             case 'expand-all': setAllCollapsed(false); break;
             case 'collapse-all': setAllCollapsed(true); break;
         }
@@ -1216,6 +1334,21 @@ function buildPanel() {
     panel.querySelector('.qrp-summary-import').addEventListener('click', importBuiltinSummary);
 
     panel.querySelector('.qrp-history').addEventListener('click', onHistoryClick);
+    panel.querySelector('.qrp-seg').addEventListener('click', (e) => {
+        const view = e.target.closest('[data-view]')?.dataset.view;
+        if (!view) return;
+        getSettings().resultView = view;
+        saveSettings();
+        renderHistory(true);
+    });
+    panel.querySelector('.qrp-filter-qr').addEventListener('change', (e) => {
+        resultFilterKey = e.target.value;
+        renderHistory(true);
+    });
+    panel.querySelector('.qrp-results-search-input').addEventListener('input', (e) => {
+        resultSearch = e.target.value.trim();
+        renderHistory(true);
+    });
     panel.querySelector('.qrp-clear').addEventListener('click', clearHistory);
 
     setupDragAndResize(panel);
@@ -1343,6 +1476,12 @@ async function onHistoryClick(e) {
         stopRun(id);
         return;
     }
+    if (act === 'toggle-row') {
+        if (card.classList.contains('qrp-pending')) return;
+        if (openRows.has(id)) openRows.delete(id); else openRows.add(id);
+        renderHistory();
+        return;
+    }
     const state = getChatState();
     const entry = state?.history.find(x => x.id === id);
     if (!entry) return;
@@ -1371,6 +1510,7 @@ async function onHistoryClick(e) {
         case 'delete':
             state.history = state.history.filter(x => x.id !== id);
             showOriginal.delete(id);
+            openRows.delete(id);
             await saveChatState();
             renderHistory();
             break;
@@ -1451,32 +1591,23 @@ function renderQrBar() {
     setupSortable(bar);
 }
 
-function cardHtml(entry, pending) {
-    const tags = [
+function entryTagsHtml(entry) {
+    return [
         `<span class="qrp-tag">${escapeHtml(entry.set)}</span>`,
         `<span class="qrp-tag" data-mode="${entry.mode}">${CONTEXT_MODES[entry.mode] ?? entry.mode}</span>`,
         entry.kind === 'script' ? '<span class="qrp-tag">스크립트</span>' : '',
         entry.profile ? `<span class="qrp-tag">${escapeHtml(entry.profile)}</span>` : '',
         entry.language ? `<span class="qrp-tag">${escapeHtml(entry.language)}</span>` : '',
     ].join('');
+}
 
-    if (pending) {
-        return `<article class="qrp-card qrp-pending" data-id="${entry.id}">
-            <div class="qrp-card-head"><span class="qrp-card-title">${escapeHtml(entry.label)}</span><div class="qrp-tags">${tags}</div></div>
-            <div class="qrp-progress" role="progressbar" aria-label="생성 중"><span></span></div>
-            <div class="qrp-card-body qrp-loading"><span class="qrp-dots"><i></i><i></i><i></i></span> 생성 중</div>
-            <div class="qrp-card-actions"><button type="button" class="qrp-act" data-act="stop"><i class="fa-solid fa-stop"></i> 중지</button></div>
-        </article>`;
-    }
-
+/** Progress, body, notes and actions of a finished entry (shared by cards and list rows). */
+function entryContentHtml(entry) {
     const hasTranslation = Boolean(entry.translation);
     const original = showOriginal.has(entry.id);
-    let body;
-    if (entry.error) {
-        body = `<div class="qrp-error"><i class="fa-solid fa-triangle-exclamation"></i> ${escapeHtml(entry.error)}</div>`;
-    } else {
-        body = renderMarkdown(hasTranslation && !original ? entry.translation : entry.output);
-    }
+    const body = entry.error
+        ? `<div class="qrp-error"><i class="fa-solid fa-triangle-exclamation"></i> ${escapeHtml(entry.error)}</div>`
+        : renderMarkdown(hasTranslation && !original ? entry.translation : entry.output);
     const blocked = entry.blocked?.length
         ? `<div class="qrp-note"><i class="fa-solid fa-shield-halved"></i> 본 채팅에 영향을 주는 명령을 막았어요: ${escapeHtml(entry.blocked.join(', '))}</div>`
         : '';
@@ -1488,13 +1619,7 @@ function cardHtml(entry, pending) {
     const progress = translating
         ? `<div class="qrp-progress qrp-progress-translate" role="progressbar" aria-label="번역 중"><span></span></div><div class="qrp-progress-label"><i class="fa-solid fa-language"></i> <span>${escapeHtml(translateStatus.get(entry.id) ?? '번역 중이에요…')}</span></div>`
         : '';
-    return `<article class="qrp-card${entry.error ? ' qrp-failed' : ''}${translating ? ' qrp-is-translating' : ''}" data-id="${entry.id}">
-        <div class="qrp-card-head">
-            <span class="qrp-card-title">${escapeHtml(entry.label)}</span>
-            <div class="qrp-tags">${tags}</div>
-            <span class="qrp-time">${formatTime(entry.at)}</span>
-        </div>
-        ${progress}
+    return `${progress}
         <div class="qrp-card-body">${body}</div>
         ${blocked}
         <div class="qrp-card-actions">
@@ -1503,8 +1628,107 @@ function cardHtml(entry, pending) {
             <button type="button" class="qrp-act" data-act="copy" title="복사"><i class="fa-solid fa-copy"></i></button>
             <button type="button" class="qrp-act" data-act="rerun" title="다시 실행"><i class="fa-solid fa-play"></i></button>
             <button type="button" class="qrp-act" data-act="delete" title="삭제"><i class="fa-solid fa-trash-can"></i></button>
+        </div>`;
+}
+
+const PENDING_CONTENT = `<div class="qrp-progress" role="progressbar" aria-label="생성 중"><span></span></div>
+    <div class="qrp-card-body qrp-loading"><span class="qrp-dots"><i></i><i></i><i></i></span> 생성 중</div>
+    <div class="qrp-card-actions"><button type="button" class="qrp-act" data-act="stop"><i class="fa-solid fa-stop"></i> 중지</button></div>`;
+
+function cardHtml(entry, pending) {
+    const tags = entryTagsHtml(entry);
+    if (pending) {
+        return `<article class="qrp-card qrp-pending" data-id="${entry.id}">
+            <div class="qrp-card-head"><span class="qrp-card-title">${escapeHtml(entry.label)}</span><div class="qrp-tags">${tags}</div></div>
+            ${PENDING_CONTENT}
+        </article>`;
+    }
+    const translating = translatingIds.has(entry.id);
+    return `<article class="qrp-card${entry.error ? ' qrp-failed' : ''}${translating ? ' qrp-is-translating' : ''}" data-id="${entry.id}">
+        <div class="qrp-card-head">
+            <span class="qrp-card-title">${escapeHtml(entry.label)}</span>
+            <div class="qrp-tags">${tags}</div>
+            <span class="qrp-time">${formatTime(entry.at)}</span>
         </div>
+        ${entryContentHtml(entry)}
     </article>`;
+}
+
+function entryPreview(entry) {
+    if (entry.error) return `⚠ ${entry.error}`;
+    const text = entry.translation && !showOriginal.has(entry.id) ? entry.translation : entry.output;
+    return String(text ?? '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/[*~`#>]+/g, '')
+        .replace(/(^|\s)_+|_+(?=\s|$)/g, '$1')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 200);
+}
+
+/** Expanded list rows (entry ids). */
+const openRows = new Set();
+
+function rowHtml(entry, pending) {
+    const open = pending || openRows.has(entry.id);
+    const translating = translatingIds.has(entry.id);
+    const status = pending
+        ? '<span class="qrp-row-status"><i class="fa-solid fa-spinner fa-spin"></i> 생성 중</span>'
+        : translating
+            ? '<span class="qrp-row-status"><i class="fa-solid fa-language"></i> 번역 중</span>'
+            : entry.translation ? '<span class="qrp-row-badge" title="번역됨"><i class="fa-solid fa-language"></i></span>' : '';
+    return `<article class="qrp-card qrp-row${open ? ' qrp-row-open' : ''}${entry.error ? ' qrp-failed' : ''}${pending ? ' qrp-pending' : ''}" data-id="${entry.id}">
+        <button type="button" class="qrp-row-head" data-act="toggle-row" aria-expanded="${open}">
+            <i class="fa-solid fa-chevron-right qrp-row-chevron"></i>
+            <span class="qrp-row-title">${escapeHtml(entry.label)}</span>
+            <span class="qrp-row-preview">${pending ? '' : escapeHtml(entryPreview(entry))}</span>
+            ${status}
+            <span class="qrp-row-mode qrp-tag" data-mode="${entry.mode}">${CONTEXT_MODES[entry.mode] ?? entry.mode}</span>
+            <span class="qrp-time">${formatTime(entry.at)}</span>
+        </button>
+        ${open ? `<div class="qrp-row-body"><div class="qrp-tags">${entryTagsHtml(entry)}</div>${pending ? PENDING_CONTENT : entryContentHtml(entry)}</div>` : ''}
+    </article>`;
+}
+
+/** Result filters (kept in memory; reset when the chat changes). */
+let resultFilterKey = '';
+let resultSearch = '';
+
+function entryKey(entry) {
+    return `${entry.set}::${entry.label}`;
+}
+
+function filterEntries(entries) {
+    const q = resultSearch.toLowerCase();
+    return entries.filter(e => {
+        if (resultFilterKey && entryKey(e) !== resultFilterKey) return false;
+        if (!q) return true;
+        return [e.label, e.output, e.translation, e.error].some(t => String(t ?? '').toLowerCase().includes(q));
+    });
+}
+
+function renderResultTools(state) {
+    const panel = document.getElementById('qrp_panel');
+    const s = getSettings();
+    panel.querySelectorAll('.qrp-view-btn').forEach(btn => btn.classList.toggle('qrp-on', btn.dataset.view === s.resultView));
+    const sortBtn = panel.querySelector('[data-action="toggle-sort"]');
+    sortBtn.style.display = s.resultView === 'list' ? '' : 'none';
+    sortBtn.innerHTML = s.listSort === 'oldest'
+        ? '<i class="fa-solid fa-arrow-up-short-wide"></i><span>오래된순</span>'
+        : '<i class="fa-solid fa-arrow-down-wide-short"></i><span>최신순</span>';
+    const listOnly = panel.querySelectorAll('[data-action="expand-rows"], [data-action="collapse-rows"]');
+    listOnly.forEach(b => { b.style.display = s.resultView === 'list' ? '' : 'none'; });
+
+    const select = panel.querySelector('.qrp-filter-qr');
+    const counts = new Map();
+    for (const e of state?.history ?? []) counts.set(entryKey(e), { label: e.label, set: e.set, n: (counts.get(entryKey(e))?.n ?? 0) + 1 });
+    if (resultFilterKey && !counts.has(resultFilterKey)) resultFilterKey = '';
+    select.innerHTML = `<option value="">모든 QR (${state?.history.length ?? 0})</option>`
+        + [...counts.entries()]
+            .sort((a, b) => a[1].label.localeCompare(b[1].label))
+            .map(([key, v]) => `<option value="${escapeHtml(key)}">${escapeHtml(v.label)} (${v.n})</option>`)
+            .join('');
+    select.value = resultFilterKey;
 }
 
 function renderHistory(scrollToBottom = false) {
@@ -1513,22 +1737,41 @@ function renderHistory(scrollToBottom = false) {
     const chatId = getCurrentChatId();
     const state = getChatState();
     const panel = document.getElementById('qrp_panel');
+    const s = getSettings();
     panel.querySelector('.qrp-chatname').textContent = getChatTitle();
+    renderResultTools(state);
+    list.classList.toggle('qrp-list-view', s.resultView === 'list');
 
     if (!state) {
         list.innerHTML = '<div class="qrp-empty">채팅을 열면 이 채팅의 QR 패널 기록이 여기에 보여요.</div>';
         panel.querySelector('.qrp-count').textContent = '';
         return;
     }
-    const pending = [...pendingRuns.values()].filter(r => r.chatId === chatId).map(r => r.entry);
+    const pending = filterEntries([...pendingRuns.values()].filter(r => r.chatId === chatId).map(r => r.entry));
+    const shown = filterEntries(state.history);
+    const filtered = Boolean(resultFilterKey || resultSearch);
+
     if (!state.history.length && !pending.length) {
         list.innerHTML = '<div class="qrp-empty qrp-empty-big"><i class="fa-solid fa-wand-magic-sparkles"></i><p>QR 버튼을 누르면 결과가 이 채팅에만 저장돼요.<br>본 채팅에는 기록되지 않아요.</p></div>';
+    } else if (!shown.length && !pending.length) {
+        list.innerHTML = '<div class="qrp-empty">조건에 맞는 결과가 없어요.</div>';
+    } else if (s.resultView === 'list') {
+        const prevTop = list.scrollTop;
+        const newestFirst = s.listSort !== 'oldest';
+        const rows = newestFirst
+            ? [...pending.slice().reverse().map(e => rowHtml(e, true)), ...shown.slice().reverse().map(e => rowHtml(e, false))]
+            : [...shown.map(e => rowHtml(e, false)), ...pending.map(e => rowHtml(e, true))];
+        list.innerHTML = rows.join('');
+        if (scrollToBottom) list.scrollTop = newestFirst ? 0 : list.scrollHeight;
+        else list.scrollTop = prevTop;
     } else {
         const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
-        list.innerHTML = state.history.map(e => cardHtml(e, false)).join('') + pending.map(e => cardHtml(e, true)).join('');
+        list.innerHTML = shown.map(e => cardHtml(e, false)).join('') + pending.map(e => cardHtml(e, true)).join('');
         if (scrollToBottom || nearBottom) list.scrollTop = list.scrollHeight;
     }
-    panel.querySelector('.qrp-count').textContent = `기록 ${state.history.length}개`;
+    panel.querySelector('.qrp-count').textContent = filtered
+        ? `기록 ${state.history.length}개 중 ${shown.length}개 표시`
+        : `기록 ${state.history.length}개`;
 }
 
 function renderSummaryMeta() {
@@ -1786,6 +2029,11 @@ function settingsFormHtml() {
             <select class="text_pole qrp-control" data-setting="profileId" data-type="select"></select>
         </label>
         <small>"현재 연결 사용"이면 지금 채팅에 쓰는 API로 생성해요. 다른 프로필을 고르면 본 채팅 연결은 그대로 두고 패널만 그 프로필로 생성해요.</small>
+        <label class="qrp-form-label qrp-preset-field">프리셋
+            <select class="text_pole qrp-control" data-special="preset"></select>
+        </label>
+        <small class="qrp-preset-field">프로필에서는 API 연결(API, 모델, 주소)만 가져오고, 생성 설정(온도 같은 값)은 여기서 고른 프리셋을 써요. 프로필마다 따로 기억해요. 프리셋의 프롬프트 내용은 쓰지 않고 패널 지시문을 써요.</small>
+        <small class="qrp-preset-hint">프리셋을 따로 고르려면 위에서 연결 프로필을 골라 주세요. "현재 연결 사용"은 지금 쓰는 프리셋을 그대로 써요.</small>
         <label class="qrp-form-label">최대 응답 길이 (토큰)
             <input type="number" class="text_pole qrp-control" data-setting="maxTokens" data-type="number" min="16" max="32000" step="16">
         </label>
@@ -1865,6 +2113,7 @@ function settingsFormHtml() {
 }
 
 const SETTING_EFFECTS = {
+    profileId: () => syncControls(),
     uiScale: () => {
         const panel = document.getElementById('qrp_panel');
         if (panel) applyScale(panel);
@@ -1923,6 +2172,15 @@ function onSettingEvent(e) {
         saveSettings();
         syncControls();
         renderQrBar();
+        return;
+    }
+
+    if (e.type === 'change' && target.matches?.('[data-special="preset"]')) {
+        const s = getSettings();
+        if (!s.profileId) return;
+        if (target.value) s.presetByProfile[s.profileId] = target.value; else delete s.presetByProfile[s.profileId];
+        saveSettings();
+        syncControls();
         return;
     }
 
@@ -2017,6 +2275,17 @@ function syncControls() {
     });
     document.querySelectorAll('[data-setting]').forEach(el => {
         if (el.dataset.setting !== 'profileId') writeControl(el, settingValue(el.dataset.setting));
+    });
+    const presetHtml = s.profileId ? presetOptionsHtml(s.profileId) : '';
+    document.querySelectorAll('[data-special="preset"]').forEach(sel => {
+        sel.innerHTML = presetHtml;
+        sel.value = getPresetChoice(s.profileId);
+    });
+    document.querySelectorAll('.qrp-preset-field').forEach(el => {
+        el.style.display = s.profileId ? '' : 'none';
+    });
+    document.querySelectorAll('.qrp-preset-hint').forEach(el => {
+        el.style.display = s.profileId ? 'none' : '';
     });
     document.querySelectorAll('.qrp-lang-custom').forEach(el => {
         el.style.display = s.outputLanguage === '__custom' ? '' : 'none';
@@ -2155,6 +2424,11 @@ jQuery(() => {
 
     eventSource.on(eventTypes.CHAT_CHANGED, () => {
         showOriginal.clear();
+        openRows.clear();
+        resultFilterKey = '';
+        resultSearch = '';
+        const search = document.querySelector('#qrp_panel .qrp-results-search-input');
+        if (search) search.value = '';
         renderAll();
     });
 

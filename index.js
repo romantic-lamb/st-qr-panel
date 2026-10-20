@@ -778,7 +778,18 @@ async function callInterpresModel(s, system, user) {
                     stream: false,
                 }),
             });
-            if (!res.ok) throw new Error(`번역 API 오류 (HTTP ${res.status})`);
+            if (!res.ok) {
+                let detail = '';
+                try {
+                    const body = await res.json();
+                    detail = String(body?.error?.message ?? body?.message ?? '').slice(0, 200);
+                } catch { /* ignore */ }
+                const err = new Error(`번역 API 오류 (HTTP ${res.status})${detail ? `: ${detail}` : ''}`);
+                err.status = res.status;
+                const retryAfter = Number(res.headers.get('retry-after'));
+                if (Number.isFinite(retryAfter) && retryAfter > 0) err.retryAfter = Math.min(60, retryAfter);
+                throw err;
+            }
             const data = await res.json();
             return String(data?.choices?.[0]?.message?.content ?? data?.content ?? '');
         } finally {
@@ -804,7 +815,42 @@ async function callInterpresModel(s, system, user) {
     }) ?? '');
 }
 
-async function translateWithInterpres(text) {
+// Rate limits (HTTP 429): wait and retry instead of failing at once.
+const RATE_LIMIT_RX = /\b429\b|rate[ _-]?limit|too many requests|resource[ _]?exhausted/i;
+const RATE_LIMIT_WAITS = [6, 20];
+
+function isRateLimitError(err) {
+    return err?.status === 429 || RATE_LIMIT_RX.test(errorText(err));
+}
+
+async function withRateLimitRetry(fn, onWait) {
+    for (let attempt = 0; ; attempt++) {
+        try {
+            return await fn();
+        } catch (err) {
+            if (!isRateLimitError(err)) throw err;
+            if (attempt >= RATE_LIMIT_WAITS.length) {
+                const wrapped = new Error('번역 모델이 요청이 너무 많다고 거절했어요 (429). 1분쯤 뒤에 다시 눌러 주세요. 무료 API는 1분에 보낼 수 있는 요청 수가 적어요.', { cause: err });
+                wrapped.rateLimited = true;
+                throw wrapped;
+            }
+            const wait = err.retryAfter ?? RATE_LIMIT_WAITS[attempt];
+            console.warn(LOG_PREFIX, `Rate limited, retrying in ${wait}s`, err);
+            onWait?.(wait, attempt + 1, RATE_LIMIT_WAITS.length);
+            await new Promise(resolve => setTimeout(resolve, wait * 1000));
+        }
+    }
+}
+
+/** Translations run one at a time so several cards (or auto-translate) never burst the translator API. */
+let translationQueue = Promise.resolve();
+function enqueueTranslation(task) {
+    const run = translationQueue.then(task, task);
+    translationQueue = run.catch(() => {});
+    return run;
+}
+
+async function translateWithInterpres(text, hooks = {}) {
     const s = getInterpresSettings();
     if (!s) throw new Error('Interpres를 찾지 못했어요. 설정에서 번역 방식을 "슬래시 명령"으로 바꾸거나 Interpres를 켜 주세요.');
     const src = LANG_NAMES[s.storyLang] ?? s.storyLang ?? 'English';
@@ -813,7 +859,10 @@ async function translateWithInterpres(text) {
     const system = buildTranslateSystemPrompt(s, src, dst);
     const sealCount = vault.length;
 
-    const attempt = async (note) => tidyTranslation(await callInterpresModel(s, system, buildTranslateUserPrompt(s, sealed, dst, note)));
+    const attempt = async (note) => tidyTranslation(await withRateLimitRetry(
+        () => callInterpresModel(s, system, buildTranslateUserPrompt(s, sealed, dst, note)),
+        hooks.onWait,
+    ));
     let out = await attempt('');
     const lostSeals = (t) => [...Array(sealCount).keys()].filter(i => !new RegExp(`<\\s*seal[-_ ]?${i}\\s*/?\\s*>`, 'i').test(t));
     if (s.structureRetry !== false && (!out || lostSeals(out).length)) {
@@ -821,7 +870,14 @@ async function translateWithInterpres(text) {
         const note = !out
             ? '[CHECK] Your previous reply was empty. Reply with the full translation only.'
             : `[CHECK] Your previous reply dropped these tags: ${lost.map(i => `<seal-${i}/>`).join(' ')}. Keep every tag exactly as given.`;
-        out = await attempt(note);
+        hooks.onStatus?.('번역을 한 번 더 확인하고 있어요…');
+        try {
+            out = await attempt(note);
+        } catch (err) {
+            // Keep the first translation if the check retry fails; missing tags are restored at the end.
+            if (!out) throw err;
+            console.warn(LOG_PREFIX, 'Translation check retry failed; keeping the first result', err);
+        }
     }
     if (!out) throw new Error('번역 모델이 빈 응답을 보냈어요. Interpres의 [모델] 설정을 확인해 주세요.');
     return unsealTranslation(out, vault).text;
@@ -849,8 +905,16 @@ async function translateWithCommand(text) {
     }
 }
 
-async function translateText(text) {
-    return getSettings().translateProvider === 'command' ? translateWithCommand(text) : translateWithInterpres(text);
+async function translateText(text, hooks = {}) {
+    return getSettings().translateProvider === 'command' ? translateWithCommand(text) : translateWithInterpres(text, hooks);
+}
+
+/** Progress label per translating entry id. */
+const translateStatus = new Map();
+function setTranslateStatus(id, text) {
+    translateStatus.set(id, text);
+    const label = document.querySelector(`#qrp_panel .qrp-card[data-id="${id}"] .qrp-progress-label span`);
+    if (label) label.textContent = text;
 }
 
 async function translateEntry(id) {
@@ -858,9 +922,16 @@ async function translateEntry(id) {
     const entry = getChatState()?.history.find(e => e.id === id);
     if (!entry?.output || translatingIds.has(id)) return;
     translatingIds.add(id);
+    translateStatus.set(id, '번역 대기 중이에요…');
     renderHistory();
     try {
-        const translated = (await translateText(entry.output)).trim();
+        const translated = (await enqueueTranslation(() => {
+            setTranslateStatus(id, '번역 중이에요…');
+            return translateText(entry.output, {
+                onWait: (sec, n, max) => setTranslateStatus(id, `요청이 많다는 응답(429)을 받아서 ${sec}초 뒤에 다시 시도해요… (${n}/${max})`),
+                onStatus: (text) => setTranslateStatus(id, text),
+            });
+        })).trim();
         if (!translated) throw new Error('번역 결과가 비어 있어요.');
         if (getCurrentChatId() !== chatId) return;
         entry.translation = translated;
@@ -871,6 +942,7 @@ async function translateEntry(id) {
         toastr.error(errorText(err), 'QR 패널 번역 실패');
     } finally {
         translatingIds.delete(id);
+        translateStatus.delete(id);
         renderHistory();
     }
 }
@@ -1414,7 +1486,7 @@ function cardHtml(entry, pending) {
         ? '<span class="qrp-act qrp-busy"><i class="fa-solid fa-spinner fa-spin"></i> 번역 중…</span>'
         : `<button type="button" class="qrp-act${hasTranslation && !original ? ' qrp-on' : ''}" data-act="translate"><i class="fa-solid fa-language"></i> ${translateLabel}</button>`;
     const progress = translating
-        ? '<div class="qrp-progress qrp-progress-translate" role="progressbar" aria-label="번역 중"><span></span></div><div class="qrp-progress-label"><i class="fa-solid fa-language"></i> 번역 중이에요…</div>'
+        ? `<div class="qrp-progress qrp-progress-translate" role="progressbar" aria-label="번역 중"><span></span></div><div class="qrp-progress-label"><i class="fa-solid fa-language"></i> <span>${escapeHtml(translateStatus.get(entry.id) ?? '번역 중이에요…')}</span></div>`
         : '';
     return `<article class="qrp-card${entry.error ? ' qrp-failed' : ''}${translating ? ' qrp-is-translating' : ''}" data-id="${entry.id}">
         <div class="qrp-card-head">

@@ -439,10 +439,10 @@ function errorText(err) {
     return cause ? `${msg}: ${cause}` : msg;
 }
 
-async function generateText({ system, user, signal }) {
+async function generateText({ system, user, signal, maxTokens: maxTokensOverride }) {
     const ctx = SillyTavern.getContext();
     const s = getSettings();
-    const maxTokens = Math.max(16, Number(s.maxTokens) || 1024);
+    const maxTokens = Math.max(16, Number(maxTokensOverride ?? s.maxTokens) || 1024);
 
     if (s.profileId) {
         const service = ctx.ConnectionManagerRequestService;
@@ -1024,6 +1024,154 @@ async function translateEntry(id) {
         translatingIds.delete(id);
         translateStatus.delete(id);
         renderHistory();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Connection tests (generation and translation)
+// ---------------------------------------------------------------------------
+
+const TEST_SYSTEM_PROMPT = 'You are a connection test. Follow the instruction exactly and reply with nothing else.';
+const TEST_USER_PROMPT = 'Reply with exactly this text: OK';
+const TEST_TRANSLATE_TEXT = '"Good morning," she said with a smile. The rain had finally stopped.';
+const TEST_TIMEOUT_MS = 90000;
+const testsRunning = new Set();
+
+function connectionHint(err) {
+    const t = errorText(err);
+    if (isRateLimitError(err)) return '요청 한도(429)에 걸렸어요. 잠시 뒤 다시 시도하거나, 한도가 넉넉한 API나 모델을 써 주세요.';
+    if (/profile not found/i.test(t)) return '연결 프로필을 찾을 수 없어요. 프로필을 다시 골라 주세요.';
+    if (/\b401\b|unauthori[sz]ed|invalid[^.]*(api[ _-]?key|token)|incorrect api key|authentication/i.test(t)) return 'API 키가 틀렸거나 만료됐어요. 키를 다시 확인해 주세요.';
+    if (/\b403\b|forbidden|permission|not allowed/i.test(t)) return '이 키로는 이 모델이나 기능을 쓸 권한이 없어요.';
+    if (/\b404\b|not found|does not exist|no such model|unknown model/i.test(t)) return '주소나 모델 이름이 맞는지 확인해 주세요.';
+    if (/\b402\b|insufficient|credit|billing|quota/i.test(t)) return '크레딧이나 사용량이 부족해요. 결제·사용량을 확인해 주세요.';
+    if (/timeout|timed out|대기 시간|시간이 초과/i.test(t)) return '응답이 너무 오래 걸렸어요. 주소와 서버 상태를 확인해 주세요.';
+    if (/failed to fetch|networkerror|load failed|cors|ERR_/i.test(t)) return '서버에 닿지 못했어요. 주소가 맞는지, 브라우저에서 바로 접속할 수 있는 주소인지(CORS) 확인해 주세요.';
+    if (/\b5\d\d\b|overloaded|unavailable/i.test(t)) return 'API 서버 쪽 오류예요. 잠시 뒤 다시 시도해 주세요.';
+    if (/connection manager/i.test(t)) return '확장 프로그램에서 Connection Manager가 켜져 있는지 확인해 주세요.';
+    return '';
+}
+
+function withTimeout(promise, ms, onTimeout) {
+    let timer;
+    return Promise.race([
+        promise,
+        new Promise((_, reject) => {
+            timer = setTimeout(() => {
+                onTimeout?.();
+                reject(new Error(`응답 대기 시간이 초과됐어요 (${Math.round(ms / 1000)}초)`));
+            }, ms);
+        }),
+    ]).finally(() => clearTimeout(timer));
+}
+
+function renderTestResult(kind, result) {
+    document.querySelectorAll(`.qrp-test-result[data-test="${kind}"]`).forEach(box => {
+        if (!result) {
+            box.hidden = true;
+            box.innerHTML = '';
+            return;
+        }
+        box.hidden = false;
+        box.dataset.state = result.state;
+        const icon = { running: 'fa-spinner fa-spin', ok: 'fa-circle-check', warn: 'fa-triangle-exclamation', fail: 'fa-circle-xmark' }[result.state];
+        box.innerHTML = `
+            <div class="qrp-test-title"><i class="fa-solid ${icon}"></i> ${escapeHtml(result.title)}</div>
+            ${result.meta ? `<div class="qrp-test-meta">${escapeHtml(result.meta)}</div>` : ''}
+            ${result.detail ? `<div class="qrp-test-detail">${escapeHtml(result.detail)}</div>` : ''}
+            ${result.hint ? `<div class="qrp-test-hint"><i class="fa-solid fa-lightbulb"></i> ${escapeHtml(result.hint)}</div>` : ''}`;
+    });
+    document.querySelectorAll(`[data-form-action="test-${kind}"]`).forEach(btn => {
+        btn.disabled = result?.state === 'running';
+        btn.classList.toggle('disabled', result?.state === 'running');
+    });
+}
+
+function seconds(ms) {
+    return `${(ms / 1000).toFixed(1)}초`;
+}
+
+async function testGeneration() {
+    if (testsRunning.has('gen')) return;
+    testsRunning.add('gen');
+    const target = getProfileLabel();
+    const maxTokens = Math.max(64, Math.min(256, Number(getSettings().maxTokens) || 256));
+    renderTestResult('gen', { state: 'running', title: '생성 연결을 테스트하는 중이에요…', meta: target });
+    const abort = new AbortController();
+    const started = performance.now();
+    try {
+        const out = (await withTimeout(
+            generateText({ system: TEST_SYSTEM_PROMPT, user: TEST_USER_PROMPT, signal: abort.signal, maxTokens }),
+            TEST_TIMEOUT_MS,
+            () => abort.abort(),
+        )).trim();
+        const took = seconds(performance.now() - started);
+        if (!out) {
+            renderTestResult('gen', {
+                state: 'warn',
+                title: '연결은 됐지만 빈 응답이 왔어요',
+                meta: `${target} · ${took}`,
+                hint: '추론(thinking) 모델이면 최대 응답 길이를 늘려 보세요. 안전 필터가 응답을 막았을 수도 있어요.',
+            });
+        } else {
+            renderTestResult('gen', { state: 'ok', title: '생성 연결 정상', meta: `${target} · ${took}`, detail: `응답: ${out.slice(0, 300)}` });
+        }
+    } catch (err) {
+        console.error(LOG_PREFIX, 'Generation test failed', err);
+        renderTestResult('gen', {
+            state: 'fail',
+            title: '생성 연결 실패',
+            meta: `${target} · ${seconds(performance.now() - started)}`,
+            detail: errorText(err),
+            hint: connectionHint(err),
+        });
+    } finally {
+        testsRunning.delete('gen');
+    }
+}
+
+function translateTargetLabel() {
+    const s = getSettings();
+    if (s.translateProvider === 'command') return `슬래시 명령 · ${String(s.translateCommand || '').trim() || '(비어 있음)'}`;
+    if (!getInterpresSettings()) return 'Interpres (찾지 못함)';
+    return interpresStatusText().replace('Interpres 설정 사용 중 · ', 'Interpres · ');
+}
+
+async function testTranslation() {
+    if (testsRunning.has('translate')) return;
+    testsRunning.add('translate');
+    const target = translateTargetLabel();
+    renderTestResult('translate', { state: 'running', title: '번역 연결을 테스트하는 중이에요…', meta: target });
+    const started = performance.now();
+    try {
+        if (getSettings().translateProvider !== 'command' && !getInterpresSettings()) {
+            throw new Error('Interpres 설정을 읽지 못했어요.');
+        }
+        const out = (await withTimeout(
+            enqueueTranslation(() => translateText(TEST_TRANSLATE_TEXT, {
+                onWait: (sec, n, max) => renderTestResult('translate', { state: 'running', title: `요청 한도(429)에 걸려서 ${sec}초 뒤에 다시 시도해요… (${n}/${max})`, meta: target }),
+            })),
+            TEST_TIMEOUT_MS,
+        )).trim();
+        const took = seconds(performance.now() - started);
+        if (!out) {
+            renderTestResult('translate', { state: 'warn', title: '연결은 됐지만 번역 결과가 비어 있어요', meta: `${target} · ${took}`, hint: '번역 모델의 응답 길이 설정과 안전 필터를 확인해 주세요.' });
+        } else if (out === TEST_TRANSLATE_TEXT) {
+            renderTestResult('translate', { state: 'warn', title: '응답은 왔지만 번역되지 않았어요', meta: `${target} · ${took}`, detail: `결과: ${out.slice(0, 300)}`, hint: '번역할 언어 설정을 확인해 주세요.' });
+        } else {
+            renderTestResult('translate', { state: 'ok', title: '번역 연결 정상', meta: `${target} · ${took}`, detail: `원문: ${TEST_TRANSLATE_TEXT}\n번역: ${out.slice(0, 300)}` });
+        }
+    } catch (err) {
+        console.error(LOG_PREFIX, 'Translation test failed', err);
+        renderTestResult('translate', {
+            state: 'fail',
+            title: '번역 연결 실패',
+            meta: `${target} · ${seconds(performance.now() - started)}`,
+            detail: errorText(err),
+            hint: connectionHint(err) || (/Interpres/.test(errorText(err)) ? 'Interpres가 설치되어 있고 켜져 있는지 확인하거나, 번역 방식을 "슬래시 명령"으로 바꿔 주세요.' : ''),
+        });
+    } finally {
+        testsRunning.delete('translate');
     }
 }
 
@@ -2041,6 +2189,11 @@ function settingsFormHtml() {
             <select class="text_pole qrp-control" data-setting="outputLanguage" data-type="select">${languageOptionsHtml()}</select>
         </label>
         <input type="text" class="text_pole qrp-control qrp-lang-custom" data-setting="customLanguage" data-type="text" placeholder="언어 이름을 영어로 (예: Spanish)">
+        <div class="qrp-test">
+            <button type="button" class="menu_button qrp-form-btn" data-form-action="test-gen"><i class="fa-solid fa-plug-circle-check"></i> 생성 연결 테스트</button>
+            <small>지금 고른 연결 프로필과 프리셋으로 짧은 요청을 하나 보내요. 기록에는 남지 않아요.</small>
+            <div class="qrp-test-result" data-test="gen" hidden></div>
+        </div>
     </section>
 
     <section class="qrp-form-section" data-section="context">
@@ -2089,6 +2242,11 @@ function settingsFormHtml() {
         </label>
         <small class="qrp-provider-command"><code>{{text}}</code> 자리에 패널 결과가 들어가요. ST 기본 번역은 <code>/translate {{text}}</code>예요.</small>
         <label class="checkbox_label qrp-check"><input type="checkbox" data-setting="autoTranslate" data-type="checkbox"> 결과가 나오면 자동으로 번역</label>
+        <div class="qrp-test">
+            <button type="button" class="menu_button qrp-form-btn" data-form-action="test-translate"><i class="fa-solid fa-plug-circle-check"></i> 번역 연결 테스트</button>
+            <small>지금 번역 방식으로 짧은 영어 문장 하나를 번역해 봐요. 기록에는 남지 않아요.</small>
+            <div class="qrp-test-result" data-test="translate" hidden></div>
+        </div>
     </section>
 
     <section class="qrp-form-section" data-section="history">
@@ -2113,13 +2271,19 @@ function settingsFormHtml() {
 }
 
 const SETTING_EFFECTS = {
-    profileId: () => syncControls(),
+    profileId: () => {
+        syncControls();
+        if (!testsRunning.has('gen')) renderTestResult('gen', null);
+    },
+    translateProvider: () => {
+        syncControls();
+        if (!testsRunning.has('translate')) renderTestResult('translate', null);
+    },
     uiScale: () => {
         const panel = document.getElementById('qrp_panel');
         if (panel) applyScale(panel);
     },
     outputLanguage: () => syncControls(),
-    translateProvider: () => syncControls(),
     showHidden: () => renderQrBar(),
     popupSize: () => {
         const panel = document.getElementById('qrp_panel');
@@ -2181,6 +2345,7 @@ function onSettingEvent(e) {
         if (target.value) s.presetByProfile[s.profileId] = target.value; else delete s.presetByProfile[s.profileId];
         saveSettings();
         syncControls();
+        if (!testsRunning.has('gen')) renderTestResult('gen', null);
         return;
     }
 
@@ -2230,6 +2395,12 @@ function onSettingClick(e) {
         }
         case 'open-panel':
             togglePanel();
+            break;
+        case 'test-gen':
+            testGeneration();
+            break;
+        case 'test-translate':
+            testTranslation();
             break;
         case 'goto': {
             const view = btn.closest('.qrp-settings-view');

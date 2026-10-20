@@ -3,11 +3,13 @@
 이미 만들어 둔 Quick Reply(QR)를 **별도 패널**에서 실행하는 SillyTavern 확장이에요.
 결과는 **채팅별로** 저장되고, 본 채팅이나 본 대화 프롬프트에는 기록되지 않아요.
 
-## 설치 (비공개 GitHub 저장소)
+## 설치
 
-1. GitHub에서 이 저장소만 읽을 수 있는 Fine-grained 토큰을 만들어요 (Contents: Read-only).
-2. ST의 확장 프로그램 → **Install extension**에 `https://토큰@github.com/romantic-lamb/st-qr-panel`을 넣어요.
+1. SillyTavern 위쪽의 확장 프로그램(블록 아이콘) → **Install extension**을 눌러요.
+2. 주소 칸에 `https://github.com/romantic-lamb/st-qr-panel`을 넣고 설치해요.
 3. 새로고침한 뒤 마법봉 메뉴에 **QR 패널**이 보이면 성공이에요.
+
+업데이트는 확장 프로그램 관리 화면에서 QR 패널의 업데이트 버튼을 누르면 돼요.
 
 필요한 것: ST 기본 **Quick Reply** 확장. 연결 프로필을 쓰려면 기본 **Connection Manager**, Interpres 번역을 쓰려면 **Interpres**가 켜져 있어야 해요.
 

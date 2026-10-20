@@ -5,7 +5,7 @@
     "js": "index.js",
     "css": "style.css",
     "author": "aillynn97",
-    "version": "2.1.0",
+    "version": "2.2.0",
     "homePage": "https://github.com/romantic-lamb/st-qr-panel",
     "auto_update": true,
     "minimum_client_version": "1.13.0"

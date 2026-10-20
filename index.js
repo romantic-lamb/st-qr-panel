@@ -5,7 +5,7 @@ const MODULE_NAME = 'qr_panel';
 const META_KEY = 'qr_panel';
 const LOG_PREFIX = '[QR Panel]';
 const TRANSLATE_BUFFER_VAR = 'qr_panel_translate_buffer';
-const SETTINGS_VERSION = 2;
+const SETTINGS_VERSION = 3;
 
 // ---------------------------------------------------------------------------
 // Model-facing prompts (English by design; editable in the settings)
@@ -69,6 +69,13 @@ const CONTEXT_MODES = {
 const MODE_ORDER = ['recent', 'summary', 'both'];
 
 const UI_SCALES = { md: 1, lg: 1.12, xl: 1.25 };
+const POPUP_SIZES = { md: [920, 0.82], lg: [1180, 0.9], full: [99999, 0.96] };
+const PANEL_MODES = ['popup', 'dock', 'float'];
+const PANEL_MODE_UI = {
+    popup: { icon: 'fa-window-maximize', label: '팝업' },
+    dock: { icon: 'fa-table-columns', label: '오른쪽에 붙이기' },
+    float: { icon: 'fa-clone', label: '떠 있는 창' },
+};
 
 // Slash commands handled while a panel script runs. Only calls coming from the panel's own script
 // are affected; the same commands used by the main chat keep working normally.
@@ -106,7 +113,8 @@ const defaultSettings = Object.freeze({
     summaryPrompt: DEFAULT_SUMMARY_PROMPT,
     maxHistory: 200,
     uiScale: 'lg',
-    panel: { mode: 'float', left: null, top: null, width: null, height: null, dockWidth: null, open: false },
+    popupSize: 'lg',
+    panel: { mode: 'popup', left: null, top: null, width: null, height: null, dockWidth: null, open: false },
 });
 
 /** In-flight runs, keyed by entry id. Kept in memory only, so a chat switch never stores half-done entries. */
@@ -115,6 +123,9 @@ const pendingRuns = new Map();
 const showOriginal = new Set();
 let summaryBusy = false;
 let editMode = false;
+let activeTab = 'run';
+/** Entry ids whose translation is in progress (shown as a progress bar on the card). */
+const translatingIds = new Set();
 let searchText = '';
 
 // ---------------------------------------------------------------------------
@@ -135,8 +146,12 @@ function getSettings() {
     if ((s.version ?? 1) < 2) {
         // v1 used a small fixed panel; let v2 pick the larger default size.
         s.panel = { ...s.panel, width: null, height: null };
-        s.version = SETTINGS_VERSION;
     }
+    if ((s.version ?? 1) < 3) {
+        // v3 opens as a centered popup by default.
+        s.panel = { ...s.panel, mode: 'popup' };
+    }
+    s.version = SETTINGS_VERSION;
     s.panel = Object.assign({}, defaultSettings.panel, s.panel);
     for (const key of ['qrModes', 'qrOrder', 'collapsedSets']) {
         if (!s[key] || typeof s[key] !== 'object' || Array.isArray(s[key])) s[key] = {};
@@ -841,9 +856,9 @@ async function translateText(text) {
 async function translateEntry(id) {
     const chatId = getCurrentChatId();
     const entry = getChatState()?.history.find(e => e.id === id);
-    if (!entry?.output) return;
-    const card = document.querySelector(`.qrp-card[data-id="${id}"]`);
-    card?.classList.add('qrp-translating');
+    if (!entry?.output || translatingIds.has(id)) return;
+    translatingIds.add(id);
+    renderHistory();
     try {
         const translated = (await translateText(entry.output)).trim();
         if (!translated) throw new Error('번역 결과가 비어 있어요.');
@@ -855,7 +870,7 @@ async function translateEntry(id) {
         console.error(LOG_PREFIX, err);
         toastr.error(errorText(err), 'QR 패널 번역 실패');
     } finally {
-        card?.classList.remove('qrp-translating');
+        translatingIds.delete(id);
         renderHistory();
     }
 }
@@ -998,7 +1013,8 @@ function languageOptionsHtml() {
 function buildPanel() {
     if (document.getElementById('qrp_panel')) return;
     const html = `
-<div id="qrp_panel" class="qrp-panel" style="display:none" aria-label="QR 패널">
+<div id="qrp_backdrop" class="qrp-backdrop" style="display:none"></div>
+<div id="qrp_panel" class="qrp-panel" style="display:none" role="dialog" aria-label="QR 패널" tabindex="-1">
     <div class="qrp-dock-handle" title="끌어서 너비 조절"></div>
     <header class="qrp-header">
         <div class="qrp-brand">
@@ -1009,75 +1025,90 @@ function buildPanel() {
             </div>
         </div>
         <div class="qrp-header-buttons">
-            <button type="button" class="qrp-icon-btn" data-action="dock" title="오른쪽에 붙이기 / 떠 있는 창"><i class="fa-solid fa-table-columns"></i></button>
-            <button type="button" class="qrp-icon-btn" data-action="settings" title="설정"><i class="fa-solid fa-gear"></i></button>
-            <button type="button" class="qrp-icon-btn" data-action="close" title="닫기"><i class="fa-solid fa-xmark"></i></button>
+            <button type="button" class="qrp-icon-btn qrp-mode-btn" data-action="cycle-mode" title="창 모드 바꾸기"><i class="fa-solid fa-window-maximize"></i></button>
+            <button type="button" class="qrp-icon-btn" data-action="close" title="닫기 (Esc)"><i class="fa-solid fa-xmark"></i></button>
         </div>
     </header>
 
-    <div class="qrp-toolbar">
-        <label class="qrp-field" title="패널에서 생성할 때 쓸 연결 프로필">
-            <i class="fa-solid fa-plug"></i>
-            <select class="qrp-select" data-setting="profileId" data-type="select"></select>
-        </label>
-        <label class="qrp-field" title="AI가 답할 언어">
-            <i class="fa-solid fa-language"></i>
-            <select class="qrp-select" data-setting="outputLanguage" data-type="select">${languageOptionsHtml()}</select>
-        </label>
-        <input type="text" class="qrp-input qrp-lang-custom" data-setting="customLanguage" data-type="text" placeholder="언어 이름 (예: Spanish)">
+    <nav class="qrp-tabs" role="tablist">
+        <button type="button" class="qrp-tab" role="tab" data-tab="run"><i class="fa-solid fa-bolt"></i><span>실행</span></button>
+        <button type="button" class="qrp-tab" role="tab" data-tab="summary"><i class="fa-solid fa-book-open"></i><span>요약</span><span class="qrp-summary-meta"></span></button>
+        <button type="button" class="qrp-tab" role="tab" data-tab="settings"><i class="fa-solid fa-sliders"></i><span>설정</span></button>
+    </nav>
+
+    <div class="qrp-tabpanel qrp-tab-run" data-pane="run">
+        <div class="qrp-toolbar">
+            <label class="qrp-field" title="패널에서 생성할 때 쓸 연결 프로필">
+                <i class="fa-solid fa-plug"></i>
+                <select class="qrp-select" data-setting="profileId" data-type="select"></select>
+            </label>
+            <label class="qrp-field" title="AI가 답할 언어">
+                <i class="fa-solid fa-language"></i>
+                <select class="qrp-select" data-setting="outputLanguage" data-type="select">${languageOptionsHtml()}</select>
+            </label>
+            <input type="text" class="qrp-input qrp-lang-custom" data-setting="customLanguage" data-type="text" placeholder="언어 이름 (예: Spanish)">
+        </div>
+        <div class="qrp-run-body">
+            <section class="qrp-qrs">
+                <div class="qrp-qrs-tools">
+                    <label class="qrp-search">
+                        <i class="fa-solid fa-magnifying-glass"></i>
+                        <input type="search" class="qrp-search-input" placeholder="QR 찾기">
+                    </label>
+                    <button type="button" class="qrp-tool-btn" data-action="expand-all" title="모두 펼치기"><i class="fa-solid fa-angles-down"></i></button>
+                    <button type="button" class="qrp-tool-btn" data-action="collapse-all" title="모두 접기"><i class="fa-solid fa-angles-up"></i></button>
+                    <button type="button" class="qrp-tool-btn" data-action="edit-order" title="순서 편집"><i class="fa-solid fa-arrows-up-down-left-right"></i><span>순서</span></button>
+                    <button type="button" class="qrp-tool-btn" data-action="refresh" title="QR 목록 새로고침"><i class="fa-solid fa-rotate"></i></button>
+                </div>
+                <div class="qrp-edit-hint">끌어서 그룹과 QR 순서를 바꿀 수 있어요. 다 했으면 <b>완료</b>를 눌러 주세요.</div>
+                <div class="qrp-qrbar"></div>
+            </section>
+            <section class="qrp-results">
+                <div class="qrp-history"></div>
+                <footer class="qrp-footer">
+                    <span class="qrp-count"></span>
+                    <button type="button" class="qrp-link qrp-clear"><i class="fa-solid fa-trash-can"></i> 기록 비우기</button>
+                </footer>
+            </section>
+        </div>
     </div>
 
-    <div class="qrp-settings-view" hidden>
-        <div class="qrp-settings-top">
-            <button type="button" class="qrp-back" data-action="settings"><i class="fa-solid fa-arrow-left"></i> 돌아가기</button>
-            <span class="qrp-settings-title">설정</span>
+    <div class="qrp-tabpanel qrp-tab-summary" data-pane="summary" hidden>
+        <div class="qrp-summary-pane">
+            <p class="qrp-pane-hint">이 채팅의 요약이에요. QR 버튼의 맥락을 <b>요약</b>이나 <b>요약+최근</b>으로 두면 이 내용이 함께 들어가요. 직접 고쳐도 되고, 아래 버튼으로 만들 수도 있어요.</p>
+            <textarea class="qrp-input qrp-summary-text" placeholder="아직 요약이 없어요."></textarea>
+            <div class="qrp-summary-buttons">
+                <button type="button" class="qrp-btn qrp-summary-generate"><i class="fa-solid fa-wand-magic-sparkles"></i> AI로 요약 갱신</button>
+                <button type="button" class="qrp-btn qrp-btn-ghost qrp-summary-import" title="ST 기본 요약(Summarize) 확장이 만든 최신 요약을 가져와요"><i class="fa-solid fa-file-import"></i> 요약 확장에서 가져오기</button>
+            </div>
         </div>
+    </div>
+
+    <div class="qrp-tabpanel qrp-tab-settings qrp-settings-view" data-pane="settings" hidden>
         <nav class="qrp-settings-nav">
             ${SETTINGS_NAV.map(([id, text]) => `<button type="button" class="qrp-nav-chip" data-form-action="goto" data-section="${id}">${text}</button>`).join('')}
         </nav>
         <div class="qrp-settings-scroll">${settingsFormHtml()}</div>
     </div>
-
-    <section class="qrp-qrs">
-        <div class="qrp-qrs-tools">
-            <label class="qrp-search">
-                <i class="fa-solid fa-magnifying-glass"></i>
-                <input type="search" class="qrp-search-input" placeholder="QR 찾기">
-            </label>
-            <button type="button" class="qrp-tool-btn" data-action="expand-all" title="모두 펼치기"><i class="fa-solid fa-angles-down"></i></button>
-            <button type="button" class="qrp-tool-btn" data-action="collapse-all" title="모두 접기"><i class="fa-solid fa-angles-up"></i></button>
-            <button type="button" class="qrp-tool-btn" data-action="edit-order" title="순서 편집"><i class="fa-solid fa-arrows-up-down-left-right"></i><span>순서</span></button>
-            <button type="button" class="qrp-tool-btn" data-action="refresh" title="QR 목록 새로고침"><i class="fa-solid fa-rotate"></i></button>
-        </div>
-        <div class="qrp-edit-hint">끌어서 그룹과 QR 순서를 바꿀 수 있어요. 다 했으면 <b>완료</b>를 눌러 주세요.</div>
-        <div class="qrp-qrbar"></div>
-    </section>
-
-    <details class="qrp-summary">
-        <summary><i class="fa-solid fa-book-open"></i><span>요약</span><span class="qrp-summary-meta"></span></summary>
-        <textarea class="qrp-input qrp-summary-text" rows="5" placeholder="이 채팅의 요약이에요. 직접 써도 되고 아래 버튼으로 만들 수도 있어요."></textarea>
-        <div class="qrp-summary-buttons">
-            <button type="button" class="qrp-btn qrp-summary-generate"><i class="fa-solid fa-wand-magic-sparkles"></i> AI로 요약 갱신</button>
-            <button type="button" class="qrp-btn qrp-btn-ghost qrp-summary-import" title="ST 기본 요약(Summarize) 확장이 만든 최신 요약을 가져와요"><i class="fa-solid fa-file-import"></i> 요약 확장에서 가져오기</button>
-        </div>
-    </details>
-
-    <div class="qrp-history"></div>
-
-    <footer class="qrp-footer">
-        <span class="qrp-count"></span>
-        <button type="button" class="qrp-link qrp-clear"><i class="fa-solid fa-trash-can"></i> 기록 비우기</button>
-    </footer>
 </div>`;
     document.body.insertAdjacentHTML('beforeend', html);
     const panel = document.getElementById('qrp_panel');
 
+    document.getElementById('qrp_backdrop').addEventListener('click', () => togglePanel(false));
+    panel.querySelector('.qrp-tabs').addEventListener('click', (e) => {
+        const tab = e.target.closest('[data-tab]')?.dataset.tab;
+        if (tab) setTab(tab);
+    });
     panel.addEventListener('click', (e) => {
         const action = e.target.closest('[data-action]')?.dataset.action;
         switch (action) {
             case 'close': togglePanel(false); break;
-            case 'settings': toggleSettingsView(); break;
-            case 'dock': setPanelMode(getSettings().panel.mode === 'dock' ? 'float' : 'dock'); break;
+            case 'cycle-mode': {
+                const mode = getSettings().panel.mode;
+                setPanelMode(PANEL_MODES[(PANEL_MODES.indexOf(mode) + 1) % PANEL_MODES.length]);
+                toastr.info(`창 모드: ${PANEL_MODE_UI[getSettings().panel.mode].label}`, 'QR 패널', { timeOut: 1500 });
+                break;
+            }
             case 'refresh': renderQrBar(); break;
             case 'edit-order': setEditMode(!editMode); break;
             case 'expand-all': setAllCollapsed(false); break;
@@ -1360,6 +1391,7 @@ function cardHtml(entry, pending) {
     if (pending) {
         return `<article class="qrp-card qrp-pending" data-id="${entry.id}">
             <div class="qrp-card-head"><span class="qrp-card-title">${escapeHtml(entry.label)}</span><div class="qrp-tags">${tags}</div></div>
+            <div class="qrp-progress" role="progressbar" aria-label="생성 중"><span></span></div>
             <div class="qrp-card-body qrp-loading"><span class="qrp-dots"><i></i><i></i><i></i></span> 생성 중</div>
             <div class="qrp-card-actions"><button type="button" class="qrp-act" data-act="stop"><i class="fa-solid fa-stop"></i> 중지</button></div>
         </article>`;
@@ -1376,18 +1408,26 @@ function cardHtml(entry, pending) {
     const blocked = entry.blocked?.length
         ? `<div class="qrp-note"><i class="fa-solid fa-shield-halved"></i> 본 채팅에 영향을 주는 명령을 막았어요: ${escapeHtml(entry.blocked.join(', '))}</div>`
         : '';
+    const translating = translatingIds.has(entry.id);
     const translateLabel = hasTranslation ? (original ? '번역 보기' : '원문 보기') : '번역';
-    return `<article class="qrp-card${entry.error ? ' qrp-failed' : ''}" data-id="${entry.id}">
+    const translateButton = translating
+        ? '<span class="qrp-act qrp-busy"><i class="fa-solid fa-spinner fa-spin"></i> 번역 중…</span>'
+        : `<button type="button" class="qrp-act${hasTranslation && !original ? ' qrp-on' : ''}" data-act="translate"><i class="fa-solid fa-language"></i> ${translateLabel}</button>`;
+    const progress = translating
+        ? '<div class="qrp-progress qrp-progress-translate" role="progressbar" aria-label="번역 중"><span></span></div><div class="qrp-progress-label"><i class="fa-solid fa-language"></i> 번역 중이에요…</div>'
+        : '';
+    return `<article class="qrp-card${entry.error ? ' qrp-failed' : ''}${translating ? ' qrp-is-translating' : ''}" data-id="${entry.id}">
         <div class="qrp-card-head">
             <span class="qrp-card-title">${escapeHtml(entry.label)}</span>
             <div class="qrp-tags">${tags}</div>
             <span class="qrp-time">${formatTime(entry.at)}</span>
         </div>
+        ${progress}
         <div class="qrp-card-body">${body}</div>
         ${blocked}
         <div class="qrp-card-actions">
-            ${entry.output && !entry.error ? `<button type="button" class="qrp-act${hasTranslation && !original ? ' qrp-on' : ''}" data-act="translate"><i class="fa-solid fa-language"></i> ${translateLabel}</button>` : ''}
-            ${hasTranslation ? '<button type="button" class="qrp-act" data-act="retranslate" title="다시 번역"><i class="fa-solid fa-arrows-rotate"></i></button>' : ''}
+            ${entry.output && !entry.error ? translateButton : ''}
+            ${hasTranslation && !translating ? '<button type="button" class="qrp-act" data-act="retranslate" title="다시 번역"><i class="fa-solid fa-arrows-rotate"></i></button>' : ''}
             <button type="button" class="qrp-act" data-act="copy" title="복사"><i class="fa-solid fa-copy"></i></button>
             <button type="button" class="qrp-act" data-act="rerun" title="다시 실행"><i class="fa-solid fa-play"></i></button>
             <button type="button" class="qrp-act" data-act="delete" title="삭제"><i class="fa-solid fa-trash-can"></i></button>
@@ -1410,7 +1450,7 @@ function renderHistory(scrollToBottom = false) {
     }
     const pending = [...pendingRuns.values()].filter(r => r.chatId === chatId).map(r => r.entry);
     if (!state.history.length && !pending.length) {
-        list.innerHTML = '<div class="qrp-empty qrp-empty-big"><i class="fa-solid fa-wand-magic-sparkles"></i><p>위의 QR 버튼을 누르면 결과가 이 채팅에만 저장돼요.<br>본 채팅에는 기록되지 않아요.</p></div>';
+        list.innerHTML = '<div class="qrp-empty qrp-empty-big"><i class="fa-solid fa-wand-magic-sparkles"></i><p>QR 버튼을 누르면 결과가 이 채팅에만 저장돼요.<br>본 채팅에는 기록되지 않아요.</p></div>';
     } else {
         const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
         list.innerHTML = state.history.map(e => cardHtml(e, false)).join('') + pending.map(e => cardHtml(e, true)).join('');
@@ -1462,7 +1502,17 @@ function applyScale(panel) {
 function layoutPanel(panel) {
     const s = getSettings();
     applyScale(panel);
-    panel.classList.toggle('qrp-docked', s.panel.mode === 'dock');
+    const mode = PANEL_MODES.includes(s.panel.mode) ? s.panel.mode : 'popup';
+    panel.classList.toggle('qrp-docked', mode === 'dock');
+    panel.classList.toggle('qrp-popup', mode === 'popup');
+    const backdrop = document.getElementById('qrp_backdrop');
+    if (backdrop) backdrop.style.display = mode === 'popup' && panel.style.display !== 'none' ? 'block' : 'none';
+    const modeBtn = panel.querySelector('.qrp-mode-btn');
+    if (modeBtn) {
+        const next = PANEL_MODES[(PANEL_MODES.indexOf(mode) + 1) % PANEL_MODES.length];
+        modeBtn.innerHTML = `<i class="fa-solid ${PANEL_MODE_UI[mode].icon}"></i>`;
+        modeBtn.title = `창 모드: ${PANEL_MODE_UI[mode].label} (누르면 ${PANEL_MODE_UI[next].label})`;
+    }
     if (isNarrowScreen()) {
         panel.removeAttribute('style');
         panel.style.display = 'flex';
@@ -1471,7 +1521,19 @@ function layoutPanel(panel) {
     }
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    if (s.panel.mode === 'dock') {
+    if (mode === 'popup') {
+        const [maxW, hRatio] = POPUP_SIZES[s.popupSize] ?? POPUP_SIZES.lg;
+        const width = Math.min(maxW, vw - 48);
+        const height = Math.min(Math.round(vh * hRatio), vh - 24);
+        Object.assign(panel.style, {
+            left: `${Math.round((vw - width) / 2)}px`,
+            top: `${Math.round((vh - height) / 2)}px`,
+            width: `${width}px`,
+            height: `${height}px`,
+        });
+        return;
+    }
+    if (mode === 'dock') {
         const width = Math.min(Math.max(360, s.panel.dockWidth || Math.min(680, Math.round(vw * 0.36))), vw - 200);
         Object.assign(panel.style, { left: '', top: '', height: '', width: `${width}px` });
         return;
@@ -1487,7 +1549,7 @@ function layoutPanel(panel) {
 
 function setPanelMode(mode) {
     const s = getSettings();
-    s.panel.mode = mode === 'dock' ? 'dock' : 'float';
+    s.panel.mode = PANEL_MODES.includes(mode) ? mode : 'popup';
     saveSettings();
     const panel = document.getElementById('qrp_panel');
     if (panel) layoutPanel(panel);
@@ -1499,7 +1561,7 @@ function setupDragAndResize(panel) {
     let drag = null;
 
     header.addEventListener('pointerdown', (e) => {
-        if (isNarrowScreen() || getSettings().panel.mode === 'dock' || e.target.closest('button, select, input')) return;
+        if (isNarrowScreen() || getSettings().panel.mode !== 'float' || e.target.closest('button, select, input')) return;
         const rect = panel.getBoundingClientRect();
         drag = { dx: e.clientX - rect.left, dy: e.clientY - rect.top };
         header.setPointerCapture(e.pointerId);
@@ -1547,7 +1609,7 @@ function setupDragAndResize(panel) {
     // Floating mode: CSS `resize: both` handles resizing; persist the size.
     let resizeTimer = null;
     new ResizeObserver(() => {
-        if (isNarrowScreen() || panel.style.display === 'none' || getSettings().panel.mode === 'dock') return;
+        if (isNarrowScreen() || panel.style.display === 'none' || getSettings().panel.mode !== 'float') return;
         clearTimeout(resizeTimer);
         resizeTimer = setTimeout(() => {
             const s = getSettings();
@@ -1574,25 +1636,36 @@ function togglePanel(force) {
     s.panel.open = open;
     saveSettings();
     if (open) {
+        setTab('run');
         layoutPanel(panel);
         renderAll();
+        if (s.panel.mode === 'popup' && !isNarrowScreen()) panel.focus({ preventScroll: true });
     } else {
         if (editMode) setEditMode(false);
-        toggleSettingsView(false);
+        const backdrop = document.getElementById('qrp_backdrop');
+        if (backdrop) backdrop.style.display = 'none';
     }
 }
 
-function toggleSettingsView(force) {
+function setTab(tab) {
     const panel = document.getElementById('qrp_panel');
     if (!panel) return;
-    const on = typeof force === 'boolean' ? force : !panel.classList.contains('qrp-show-settings');
-    if (on && editMode) setEditMode(false);
-    panel.classList.toggle('qrp-show-settings', on);
-    panel.querySelector('.qrp-settings-view').hidden = !on;
-    if (on) {
+    activeTab = ['run', 'summary', 'settings'].includes(tab) ? tab : 'run';
+    if (activeTab !== 'run' && editMode) setEditMode(false);
+    panel.querySelectorAll('.qrp-tab').forEach(btn => {
+        const on = btn.dataset.tab === activeTab;
+        btn.classList.toggle('qrp-tab-active', on);
+        btn.setAttribute('aria-selected', String(on));
+    });
+    panel.querySelectorAll('.qrp-tabpanel').forEach(pane => {
+        pane.hidden = pane.dataset.pane !== activeTab;
+    });
+    if (activeTab === 'settings') {
         syncControls();
         panel.querySelector('.qrp-settings-scroll').scrollTop = 0;
     }
+    if (activeTab === 'summary') renderSummary();
+    if (activeTab === 'run') renderHistory(true);
 }
 
 // ---------------------------------------------------------------------------
@@ -1624,10 +1697,15 @@ function settingsFormHtml() {
         </label>
         <label class="qrp-form-label">창 모드
             <select class="text_pole qrp-control" data-setting="panelMode" data-type="select">
-                ${option('float', '떠 있는 창')}${option('dock', '오른쪽에 붙이기')}
+                ${option('popup', '팝업 (화면 가운데)')}${option('dock', '오른쪽에 붙이기')}${option('float', '떠 있는 창 (옮기고 크기 조절)')}
             </select>
         </label>
-        <small>휴대폰처럼 좁은 화면에서는 항상 전체 화면으로 열려요.</small>
+        <label class="qrp-form-label">팝업 크기
+            <select class="text_pole qrp-control" data-setting="popupSize" data-type="select">
+                ${option('md', '보통')}${option('lg', '크게')}${option('full', '화면 가득')}
+            </select>
+        </label>
+        <small>휴대폰처럼 좁은 화면에서는 항상 전체 화면으로 열려요. 팝업은 바깥을 누르거나 Esc를 누르면 닫혀요.</small>
     </section>
 
     <section class="qrp-form-section" data-section="generation">
@@ -1722,6 +1800,10 @@ const SETTING_EFFECTS = {
     outputLanguage: () => syncControls(),
     translateProvider: () => syncControls(),
     showHidden: () => renderQrBar(),
+    popupSize: () => {
+        const panel = document.getElementById('qrp_panel');
+        if (panel && panel.style.display !== 'none') layoutPanel(panel);
+    },
     defaultMode: () => renderQrBar(),
 };
 
@@ -1915,7 +1997,7 @@ function buildSettingsUi() {
         </div>
         <div class="inline-drawer-content">
             <button type="button" class="menu_button qrp-form-btn" data-form-action="open-panel"><i class="fa-solid fa-layer-group"></i> 패널 열기 / 닫기</button>
-            <small>모든 설정은 패널 오른쪽 위 <i class="fa-solid fa-gear"></i> 버튼에서도 바꿀 수 있어요.</small>
+            <small>모든 설정은 패널의 <b>설정</b> 탭에서도 바꿀 수 있어요.</small>
             ${settingsFormHtml()}
         </div>
     </div>
@@ -1989,6 +2071,15 @@ jQuery(() => {
         syncControls();
         if (getSettings().panel.open) togglePanel(true);
     });
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        const panel = document.getElementById('qrp_panel');
+        if (!panel || panel.style.display === 'none' || getSettings().panel.mode !== 'popup') return;
+        if (document.querySelector('dialog[open]')) return;
+        e.stopPropagation();
+        togglePanel(false);
+    }, true);
 
     eventSource.on(eventTypes.CHAT_CHANGED, () => {
         showOriginal.clear();
